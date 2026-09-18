@@ -43,6 +43,8 @@ public class HashicorpVaultAdminEventListenerFactory implements EventListenerPro
                 ClientSecretVaultSync.sync(KeycloakSessionUtil.getKeycloakSession(), creation.getCreatedClient());
             } else if (event instanceof ClientModel.ClientUpdatedEvent updated) {
                 ClientSecretVaultSync.sync(updated.getKeycloakSession(), updated.getUpdatedClient());
+            } else if (event instanceof ClientModel.ClientRemovedEvent removed) {
+                ClientSecretVaultSync.delete(removed.getKeycloakSession(), removed.getClient());
             }
         });
     }

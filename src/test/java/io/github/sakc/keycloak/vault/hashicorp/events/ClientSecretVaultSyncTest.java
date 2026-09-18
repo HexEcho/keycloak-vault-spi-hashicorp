@@ -63,6 +63,14 @@ class ClientSecretVaultSyncTest {
                 "clients/uuid/client-secret")));
     }
 
+    @Test
+    void identifiesClientDeletion() {
+        assertTrue(ClientSecretVaultSync.isClientDeletionAdminEvent(event(ResourceType.CLIENT, OperationType.DELETE,
+                "clients/uuid")));
+        assertFalse(ClientSecretVaultSync.isClientDeletionAdminEvent(event(ResourceType.REALM, OperationType.DELETE,
+                "clients/uuid")));
+    }
+
     private static AdminEvent event(ResourceType type, OperationType operation, String path) {
         AdminEvent event = new AdminEvent();
         if (type != null) {

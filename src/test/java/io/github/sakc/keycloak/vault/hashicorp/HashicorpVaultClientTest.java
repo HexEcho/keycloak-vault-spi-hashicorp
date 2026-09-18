@@ -41,6 +41,20 @@ class HashicorpVaultClientTest {
     }
 
     @Test
+    void kvV2DeletePathUsesMetadataSegment() {
+        HashicorpVaultConfig config = config("http://vault:8200", "secret", 2);
+        assertEquals("http://vault:8200/v1/secret/metadata/master_client",
+                HashicorpVaultClient.deleteUrl(config, "master_client"));
+    }
+
+    @Test
+    void kvV1DeletePathUsesSecretPath() {
+        HashicorpVaultConfig config = config("http://vault:8200", "secret", 1);
+        assertEquals("http://vault:8200/v1/secret/master_client",
+                HashicorpVaultClient.deleteUrl(config, "master_client"));
+    }
+
+    @Test
     void extractKvV2Field() throws IOException {
         JsonNode root = JsonSerialization.mapper.readTree("""
                 {"data":{"data":{"value":"bind-password","username":"cn=admin"}}}

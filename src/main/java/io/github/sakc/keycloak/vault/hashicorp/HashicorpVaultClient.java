@@ -89,6 +89,22 @@ public final class HashicorpVaultClient {
         }
     }
 
+    public DeleteResult deleteSecret(KeycloakSession session, String token, String vaultKey) {
+        String url = deleteUrl(config, vaultKey);
+        try (SimpleHttpResponse response = applyVaultHeaders(SimpleHttp.create(session)
+                .doDelete(url), token)
+                .asResponse()) {
+            int status = response.getStatus();
+            if (status != 404 && (status < 200 || status >= 300)) {
+                log.warnf("Failed to delete secret from HashiCorp Vault for key %s. HTTP %d.", vaultKey, status);
+            }
+            return new DeleteResult(status);
+        } catch (IOException e) {
+            log.error("Error deleting secret from HashiCorp Vault.", e);
+            return new DeleteResult(0);
+        }
+    }
+
     public JsonNode login(KeycloakSession session, String loginPath, Map<String, String> body) throws IOException {
         String url = config.getUrl() + "/v1/" + stripLeadingSlash(loginPath);
         try (SimpleHttpResponse response = applyVaultHeaders(SimpleHttp.create(session)
@@ -111,6 +127,18 @@ public final class HashicorpVaultClient {
                 .append(config.getKvMount());
         if (config.getKvVersion() == 2) {
             url.append("/data/");
+        } else {
+            url.append('/');
+        }
+        return url.append(vaultKey).toString();
+    }
+
+    static String deleteUrl(HashicorpVaultConfig config, String vaultKey) {
+        StringBuilder url = new StringBuilder(config.getUrl())
+                .append("/v1/")
+                .append(config.getKvMount());
+        if (config.getKvVersion() == 2) {
+            url.append("/metadata/");
         } else {
             url.append('/');
         }
@@ -167,6 +195,16 @@ public final class HashicorpVaultClient {
     public record WriteResult(int status) {
         public boolean success() {
             return status >= 200 && status < 300;
+        }
+
+        public boolean isForbidden() {
+            return status == 403;
+        }
+    }
+
+    public record DeleteResult(int status) {
+        public boolean success() {
+            return (status >= 200 && status < 300) || status == 404;
         }
 
         public boolean isForbidden() {

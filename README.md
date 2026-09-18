@@ -65,6 +65,8 @@ LDAP bind credential, SMTP password, and identity-provider client secret are **r
 4. Keycloak stores `${vault.{clientId}}`.
 5. Token requests send the **real** secret. The vault-aware `client-secret` authenticator resolves the pointer and compares.
 
+When the client is deleted, this SPI deletes the corresponding managed Vault entry as well. KV v2 deletion removes all versions through the metadata endpoint. A missing entry is treated as already deleted; manually managed Vault entries are not touched.
+
 If the Vault write fails, the generated secret stays in Keycloak.
 
 The Admin Console Credentials tab still shows the newly generated secret **once** (POST response). Leave the client and open it again: the stored value should be `${vault.xyz}`.

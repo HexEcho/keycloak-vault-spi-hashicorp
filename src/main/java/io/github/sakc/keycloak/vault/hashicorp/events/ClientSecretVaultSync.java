@@ -79,6 +79,12 @@ public final class ClientSecretVaultSync {
         return operation == OperationType.CREATE || operation == OperationType.UPDATE;
     }
 
+    public static boolean isClientDeletionAdminEvent(AdminEvent event) {
+        return event != null
+                && event.getResourceType() == ResourceType.CLIENT
+                && event.getOperationType() == OperationType.DELETE;
+    }
+
     public static String clientUuidFromPath(String resourcePath) {
         if (resourcePath == null || resourcePath.isEmpty()) {
             return null;
@@ -152,6 +158,55 @@ public final class ClientSecretVaultSync {
         }
     }
 
+    public static void delete(KeycloakSession session, ClientModel client) {
+        delete(session, vaultFactory(session), client);
+    }
+
+    public static void delete(KeycloakSession session, HashicorpVaultProviderFactory factory, ClientModel client) {
+        if (session == null || factory == null || client == null || client.isPublicClient() || client.isBearerOnly()) {
+            return;
+        }
+        String clientId = client.getClientId();
+        if (clientId == null || clientId.isBlank()
+                || !HashicorpVaultExpressions.pointer(clientId).equals(client.getSecret())) {
+            return;
+        }
+
+        HashicorpVaultConfig config = factory.vaultConfig();
+        HashicorpVaultClient http = factory.vaultHttp();
+        VaultTokenProvider tokenProvider = factory.tokenProvider();
+        RealmModel realm = client.getRealm();
+        if (config == null || http == null || tokenProvider == null || realm == null) {
+            return;
+        }
+
+        String vaultKey = factory.resolveKey(realm.getName(), clientId);
+        if (!HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
+            log.warnf("Refusing to delete client secret for unsafe vault key %s", vaultKey);
+            return;
+        }
+
+        String token = tokenProvider.getToken(session);
+        if (token == null) {
+            log.warn("Vault token provider returned null; cannot delete client secret.");
+            return;
+        }
+        HashicorpVaultClient.DeleteResult result = http.deleteSecret(session, token, vaultKey);
+        if (result.isForbidden()) {
+            tokenProvider.invalidate();
+            String refreshed = tokenProvider.getToken(session);
+            if (refreshed != null) {
+                result = http.deleteSecret(session, refreshed, vaultKey);
+            }
+        }
+        if (result.success()) {
+            cacheRemove(session, config, vaultKey);
+            log.infof("Deleted client secret from HashiCorp Vault at key %s", vaultKey);
+        } else {
+            log.errorf("Failed to delete client secret from Vault for key %s. HTTP %d.", vaultKey, result.status());
+        }
+    }
+
     public static void syncFromAdminEvent(KeycloakSession session, AdminEvent event) {
         if (session == null || !isClientSecretAdminEvent(event)) {
             return;
@@ -175,6 +230,16 @@ public final class ClientSecretVaultSync {
         Cache<String, String> cache = HashicorpVaultCaches.get(session);
         if (cache != null) {
             cache.put(vaultKey, secret, config.getCacheTtlMs(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private static void cacheRemove(KeycloakSession session, HashicorpVaultConfig config, String vaultKey) {
+        if (!config.cacheEnabled()) {
+            return;
+        }
+        Cache<String, String> cache = HashicorpVaultCaches.get(session);
+        if (cache != null) {
+            cache.remove(vaultKey);
         }
     }
 }
