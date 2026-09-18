@@ -1,0 +1,180 @@
+/*
+ * Copyright 2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.github.sakc.keycloak.vault.hashicorp.events;
+
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultClient;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultConfig;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultExpressions;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProvider;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProviderFactory;
+import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
+import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
+import org.infinispan.Cache;
+import org.jboss.logging.Logger;
+import org.keycloak.events.admin.AdminEvent;
+import org.keycloak.events.admin.OperationType;
+import org.keycloak.events.admin.ResourceType;
+import org.keycloak.models.ClientModel;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.RealmModel;
+import org.keycloak.vault.VaultProvider;
+
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Writes a generated client secret to HashiCorp KV and stores {@code ${vault.clientId}} in Keycloak.
+ */
+public final class ClientSecretVaultSync {
+
+    private static final Logger log = Logger.getLogger(ClientSecretVaultSync.class);
+    private static final String SYNCING = ClientSecretVaultSync.class.getName() + ".syncing";
+
+    private ClientSecretVaultSync() {
+    }
+
+    public static HashicorpVaultProviderFactory vaultFactory(KeycloakSession session) {
+        if (session == null) {
+            return null;
+        }
+        return (HashicorpVaultProviderFactory) session.getKeycloakSessionFactory()
+                .getProviderFactory(VaultProvider.class, HashicorpVaultProviderFactory.PROVIDER_ID);
+    }
+
+    public static boolean shouldSync(ClientModel client) {
+        if (client == null || client.isPublicClient() || client.isBearerOnly()) {
+            return false;
+        }
+        String clientId = client.getClientId();
+        if (clientId == null || clientId.isBlank() || clientId.indexOf('}') >= 0) {
+            return false;
+        }
+        String secret = client.getSecret();
+        return secret != null && !secret.isBlank() && !HashicorpVaultExpressions.isExpression(secret);
+    }
+
+    public static boolean isClientSecretAdminEvent(AdminEvent event) {
+        if (event == null) {
+            return false;
+        }
+        OperationType operation = event.getOperationType();
+        if (operation == OperationType.ACTION && isClientSecretPath(event.getResourcePath())) {
+            return true;
+        }
+        if (event.getResourceType() != ResourceType.CLIENT) {
+            return false;
+        }
+        return operation == OperationType.CREATE || operation == OperationType.UPDATE;
+    }
+
+    public static String clientUuidFromPath(String resourcePath) {
+        if (resourcePath == null || resourcePath.isEmpty()) {
+            return null;
+        }
+        String[] parts = resourcePath.split("/");
+        for (int i = 0; i < parts.length; i++) {
+            if ("clients".equals(parts[i]) && i + 1 < parts.length && !parts[i + 1].isEmpty()) {
+                return parts[i + 1];
+            }
+        }
+        return null;
+    }
+
+    public static boolean isClientSecretPath(String resourcePath) {
+        return resourcePath != null && resourcePath.contains("client-secret") && !resourcePath.contains("rotated");
+    }
+
+    public static void sync(KeycloakSession session, ClientModel client) {
+        sync(session, vaultFactory(session), client);
+    }
+
+    public static void sync(KeycloakSession session, HashicorpVaultProviderFactory factory, ClientModel client) {
+        if (session == null || factory == null || !shouldSync(client)) {
+            return;
+        }
+        if (Boolean.TRUE.equals(session.getAttribute(SYNCING))) {
+            return;
+        }
+        HashicorpVaultConfig config = factory.vaultConfig();
+        HashicorpVaultClient http = factory.vaultHttp();
+        VaultTokenProvider tokenProvider = factory.tokenProvider();
+        if (config == null || http == null || tokenProvider == null) {
+            return;
+        }
+        RealmModel realm = client.getRealm();
+        if (realm == null) {
+            return;
+        }
+        String vaultKey = factory.resolveKey(realm.getName(), client.getClientId());
+        if (!HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
+            log.warnf("Refusing to write client secret for unsafe vault key %s", vaultKey);
+            return;
+        }
+
+        session.setAttribute(SYNCING, Boolean.TRUE);
+        try {
+            String token = tokenProvider.getToken(session);
+            if (token == null) {
+                log.warn("Vault token provider returned null; cannot write client secret.");
+                return;
+            }
+            String secret = client.getSecret();
+            HashicorpVaultClient.WriteResult result = http.writeSecret(session, token, vaultKey, secret);
+            if (result.isForbidden()) {
+                tokenProvider.invalidate();
+                String refreshed = tokenProvider.getToken(session);
+                if (refreshed != null) {
+                    result = http.writeSecret(session, refreshed, vaultKey, secret);
+                }
+            }
+            if (!result.success()) {
+                return;
+            }
+            client.setSecret(HashicorpVaultExpressions.pointer(client.getClientId()));
+            client.updateClient();
+            cachePut(session, config, vaultKey, secret);
+            log.infof("Stored client secret in HashiCorp Vault at key %s and set Keycloak secret to %s",
+                    vaultKey, HashicorpVaultExpressions.pointer(client.getClientId()));
+        } finally {
+            session.removeAttribute(SYNCING);
+        }
+    }
+
+    public static void syncFromAdminEvent(KeycloakSession session, AdminEvent event) {
+        if (session == null || !isClientSecretAdminEvent(event)) {
+            return;
+        }
+        RealmModel realm = session.realms().getRealm(event.getRealmId());
+        if (realm == null) {
+            return;
+        }
+        String clientUuid = clientUuidFromPath(event.getResourcePath());
+        if (clientUuid == null) {
+            return;
+        }
+        ClientModel client = session.clients().getClientById(realm, clientUuid);
+        sync(session, client);
+    }
+
+    private static void cachePut(KeycloakSession session, HashicorpVaultConfig config, String vaultKey, String secret) {
+        if (!config.cacheEnabled()) {
+            return;
+        }
+        Cache<String, String> cache = HashicorpVaultCaches.get(session);
+        if (cache != null) {
+            cache.put(vaultKey, secret, config.getCacheTtlMs(), TimeUnit.MILLISECONDS);
+        }
+    }
+}
