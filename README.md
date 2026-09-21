@@ -281,6 +281,9 @@ If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not c
 | `kv-field` | `--spi-vault--hashicorp--kv-field` | `value` | If secrets are not stored in field `value` |
 | `key-resolvers` | `--spi-vault--hashicorp--key-resolvers` | `REALM_UNDERSCORE_KEY` | Set `REALM_FILESEPARATOR_KEY` for `{realm}/{key}` folders |
 | `cache-ttl` | `--spi-vault--hashicorp--cache-ttl` | `300000` (ms) | `0` disables Infinispan caching |
+| `cache-enabled` | `--spi-vault--hashicorp--cache-enabled` | `true` | Set `false` to disable cached reads regardless of TTL |
+| `cache-max-entries` | `--spi-vault--hashicorp--cache-max-entries` | `10000` | Per-node bound for the local secret cache; takes effect when the cache is first created |
+| `kv-read-version` | `--spi-vault--hashicorp--kv-read-version` | unset (latest) | Optional immutable KV v2 version to read; ignored for KV v1 |
 | `managed-secret-prefix` | `--spi-vault--hashicorp--managed-secret-prefix` | unset | Set (for example `managed`) to isolate SPI-written confidential-client secrets under `<realm>/<prefix>/<clientId>`, see [Managed vs externally managed secrets](#managed-vs-externally-managed-secrets). Unset preserves the existing path. |
 
 ### Other Keycloak SPI used by this product (not this JAR’s properties)
@@ -294,6 +297,20 @@ If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not c
 That HTTP client keystore is **process-wide** (all Keycloak outbound HTTPS).
 
 Do **not** set `--vault=file` or `--vault=keystore`. Those select a different vault provider.
+
+## Cache, consistency, and rotation
+
+Successful Vault field reads may be stored in Keycloak's existing embedded Infinispan cache named `hashicorp-vault`. The cache contains only the resolved field value; it never stores Vault tokens, metadata responses, failures, missing values, deleted versions, or destroyed versions. A cache entry has the configured `cache-ttl` lifespan and the cache has a configured `cache-max-entries` bound. Either `cache-enabled=false` or `cache-ttl=0` bypasses it completely.
+
+Each entry uses a deterministic length-prefixed identity containing the Keycloak realm, KV mount, resolved Vault path, selected field, KV engine version, and requested KV v2 version (`latest` or a configured numeric version). Thus a lookup in one realm cannot satisfy the same path request in another realm, and a historical version cannot satisfy a latest-version lookup.
+
+This integration intentionally uses a `LOCAL` cache on each Keycloak node. It does not configure a distributed, replicated, or invalidation cache and does not claim immediate cross-node invalidation. A successful SPI-managed client-secret write (including regenerate/rotation) and delete invalidate the precise local entry. Admin-event pointer changes do the same. Other nodes can retain the old value until their entry expires, they process a local invalidation event, or they restart. Choose a shorter TTL for faster rotation convergence, or disable caching where immediate Vault visibility outweighs request reduction.
+
+For rotation, Keycloak generates a new client secret, the SPI writes it as a new KV v2 version, then invalidates the local cache. The next local read fetches the new Vault value. Old KV v2 versions are retained by Vault's configured retention policy; the SPI does not destroy them automatically. Client deletion uses the existing KV v2 metadata-delete behavior for the SPI-managed entry. Never rely on cache expiry as a rotation mechanism.
+
+When Vault is unavailable, an unexpired local cache entry remains usable. A cache miss or expired entry follows the normal bounded Vault retry behavior and then fails closed. `404`, deleted versions, destroyed versions, missing fields, authorization failures, and transient failures are not negatively cached, so a later corrected Vault state is visible on the next read. Concurrent misses for the same deterministic cache key are coalesced per Keycloak node; unrelated secret paths do not block one another.
+
+KV v2 reads default to the latest version. Set `kv-read-version=N` to read a fixed positive version through Vault's `GET .../data/<path>?version=N` API. The cache identity includes `N`. The client also exposes KV v2 metadata lookup for current version, creation time, deleted state, and destroyed state without returning, logging, or caching secret contents. KV v1 preserves its existing unversioned read/write behavior.
 
 ## Authentication with HashiCorp
 

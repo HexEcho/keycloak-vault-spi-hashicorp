@@ -34,6 +34,7 @@ public final class HashicorpVaultConfig {
     public static final String DEFAULT_KV_FIELD = "value";
     public static final int DEFAULT_KV_VERSION = 2;
     public static final long DEFAULT_CACHE_TTL_MS = 300_000L;
+    public static final int DEFAULT_CACHE_MAX_ENTRIES = 10_000;
 
     public static final long DEFAULT_CONNECT_TIMEOUT_MS = 2_000L;
     public static final long DEFAULT_READ_TIMEOUT_MS = 5_000L;
@@ -61,7 +62,10 @@ public final class HashicorpVaultConfig {
     private final String kvMount;
     private final int kvVersion;
     private final String kvField;
+    private final Integer kvReadVersion;
+    private final boolean cacheEnabled;
     private final long cacheTtlMs;
+    private final int cacheMaxEntries;
     private final String managedSecretPrefix;
     private final long connectTimeoutMs;
     private final long readTimeoutMs;
@@ -73,7 +77,8 @@ public final class HashicorpVaultConfig {
     private final long healthCheckIntervalMs;
 
     private HashicorpVaultConfig(String url, String authMethod, String namespace, String kvMount, int kvVersion,
-                                  String kvField, long cacheTtlMs, String managedSecretPrefix,
+                                  String kvField, Integer kvReadVersion, boolean cacheEnabled, long cacheTtlMs,
+                                  int cacheMaxEntries, String managedSecretPrefix,
                                   long connectTimeoutMs, long readTimeoutMs, long requestTimeoutMs,
                                   int retryMaxAttempts, long retryInitialDelayMs, long retryMaxDelayMs,
                                   boolean healthCheckEnabled, long healthCheckIntervalMs) {
@@ -83,7 +88,10 @@ public final class HashicorpVaultConfig {
         this.kvMount = kvMount;
         this.kvVersion = kvVersion;
         this.kvField = kvField;
+        this.kvReadVersion = kvReadVersion;
+        this.cacheEnabled = cacheEnabled;
         this.cacheTtlMs = cacheTtlMs;
+        this.cacheMaxEntries = cacheMaxEntries;
         this.managedSecretPrefix = managedSecretPrefix;
         this.connectTimeoutMs = connectTimeoutMs;
         this.readTimeoutMs = readTimeoutMs;
@@ -106,7 +114,22 @@ public final class HashicorpVaultConfig {
             kvVersion = DEFAULT_KV_VERSION;
         }
         String kvField = config.get("kv-field", DEFAULT_KV_FIELD);
+        Integer kvReadVersion = optionalPositiveInt(config.getInt("kv-read-version", 0), "kv-read-version");
+        if (kvVersion != 2 && kvReadVersion != null) {
+            log.warn("kv-read-version applies only to KV v2; ignoring it for KV v1.");
+            kvReadVersion = null;
+        }
+        boolean cacheEnabled = config.getBoolean("cache-enabled", true);
         long cacheTtlMs = config.getLong("cache-ttl", DEFAULT_CACHE_TTL_MS);
+        if (cacheTtlMs < 0) {
+            log.warnf("cache-ttl must be >= 0; using %d.", DEFAULT_CACHE_TTL_MS);
+            cacheTtlMs = DEFAULT_CACHE_TTL_MS;
+        }
+        int cacheMaxEntries = config.getInt("cache-max-entries", DEFAULT_CACHE_MAX_ENTRIES);
+        if (cacheMaxEntries < 1) {
+            log.warnf("cache-max-entries must be >= 1; using %d.", DEFAULT_CACHE_MAX_ENTRIES);
+            cacheMaxEntries = DEFAULT_CACHE_MAX_ENTRIES;
+        }
         String managedSecretPrefix = blankToNull(config.get("managed-secret-prefix"));
 
         long connectTimeoutMs = positiveOrDefault(config.getLong("connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS),
@@ -129,9 +152,21 @@ public final class HashicorpVaultConfig {
         long healthCheckIntervalMs = positiveOrDefault(config.getLong("health-check-interval-ms", DEFAULT_HEALTH_CHECK_INTERVAL_MS),
                 DEFAULT_HEALTH_CHECK_INTERVAL_MS, "health-check-interval-ms");
 
-        return new HashicorpVaultConfig(url, authMethod, namespace, kvMount, kvVersion, kvField, cacheTtlMs,
-                managedSecretPrefix, connectTimeoutMs, readTimeoutMs, requestTimeoutMs, retryMaxAttempts,
+        return new HashicorpVaultConfig(url, authMethod, namespace, kvMount, kvVersion, kvField, kvReadVersion,
+                cacheEnabled, cacheTtlMs, cacheMaxEntries, managedSecretPrefix,
+                connectTimeoutMs, readTimeoutMs, requestTimeoutMs, retryMaxAttempts,
                 retryInitialDelayMs, retryMaxDelayMs, healthCheckEnabled, healthCheckIntervalMs);
+    }
+
+    private static Integer optionalPositiveInt(int value, String propertyName) {
+        if (value == 0) {
+            return null;
+        }
+        if (value < 0) {
+            log.warnf("%s must be > 0 when set; ignoring it.", propertyName);
+            return null;
+        }
+        return value;
     }
 
     private static long positiveOrDefault(long value, long defaultValue, String propertyName) {
@@ -166,12 +201,20 @@ public final class HashicorpVaultConfig {
         return kvField;
     }
 
+    public Integer getKvReadVersion() {
+        return kvReadVersion;
+    }
+
     public long getCacheTtlMs() {
         return cacheTtlMs;
     }
 
     public boolean cacheEnabled() {
-        return cacheTtlMs > 0;
+        return cacheEnabled && cacheTtlMs > 0;
+    }
+
+    public int getCacheMaxEntries() {
+        return cacheMaxEntries;
     }
 
     /**

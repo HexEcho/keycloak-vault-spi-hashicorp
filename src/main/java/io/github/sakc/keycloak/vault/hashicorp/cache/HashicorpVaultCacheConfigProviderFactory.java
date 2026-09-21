@@ -15,8 +15,6 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp.cache;
 
-import org.infinispan.configuration.cache.CacheMode;
-import org.infinispan.configuration.cache.ConfigurationBuilder;
 import org.infinispan.configuration.parsing.ConfigurationBuilderHolder;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.spi.infinispan.impl.embedded.DefaultCacheEmbeddedConfigProviderFactory;
@@ -24,8 +22,8 @@ import org.keycloak.spi.infinispan.impl.embedded.DefaultCacheEmbeddedConfigProvi
 import java.io.IOException;
 
 /**
- * Registers a LOCAL Infinispan cache for HashiCorp vault secrets on Keycloak's cache manager.
- * Same factory id as Keycloak's default ({@code default}) with a higher order so this instance is selected.
+ * Keeps Keycloak's normal cache configuration. The vault cache is created lazily because its bound
+ * is a provider setting rather than a server-wide Infinispan setting.
  */
 public class HashicorpVaultCacheConfigProviderFactory extends DefaultCacheEmbeddedConfigProviderFactory {
 
@@ -34,9 +32,6 @@ public class HashicorpVaultCacheConfigProviderFactory extends DefaultCacheEmbedd
     @Override
     protected ConfigurationBuilderHolder createConfiguration(KeycloakSessionFactory factory) throws IOException {
         ConfigurationBuilderHolder holder = super.createConfiguration(factory);
-        ConfigurationBuilder builder = holder.newConfigurationBuilder(CACHE_NAME);
-        builder.clustering().cacheMode(CacheMode.LOCAL);
-        builder.memory().maxCount(10_000);
         return holder;
     }
 

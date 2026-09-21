@@ -161,6 +161,15 @@ public final class VaultPathResolver {
         return url.append(resolvedKey).toString();
     }
 
+    /** KV v2 metadata URL; callers must reject KV v1 because it has no version metadata API. */
+    public static String metadataUrl(HashicorpVaultConfig config, String resolvedKey) {
+        if (config.getKvVersion() != 2) {
+            throw new IllegalArgumentException("KV v1 does not expose KV v2 metadata");
+        }
+        requireSafeResolvedKeyForUrl(resolvedKey);
+        return config.getUrl() + "/v1/" + config.getKvMount() + "/metadata/" + resolvedKey;
+    }
+
     private static void requireSafeResolvedKeyForUrl(String resolvedKey) {
         if (!isSafeResolvedKey(resolvedKey)) {
             throw new IllegalArgumentException("Refusing to build a Vault URL for an unsafe key.");

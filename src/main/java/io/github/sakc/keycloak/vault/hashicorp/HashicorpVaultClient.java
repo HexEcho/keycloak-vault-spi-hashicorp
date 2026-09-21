@@ -55,17 +55,28 @@ public final class HashicorpVaultClient {
     }
 
     public SecretLookup readSecret(KeycloakSession session, String token, String vaultKey) {
+        return readSecret(session, token, vaultKey, config.getKvReadVersion());
+    }
+
+    public SecretLookup readSecret(KeycloakSession session, String token, String vaultKey, Integer version) {
         String url;
         try {
             url = secretUrl(config, vaultKey);
+            if (version != null) {
+                if (config.getKvVersion() != 2 || version < 1) {
+                    throw new IllegalArgumentException("A Vault secret version requires KV v2 and a positive version");
+                }
+                url += "?version=" + version;
+            }
         } catch (IllegalArgumentException e) {
             log.warn("Refusing to read a secret for an unsafe Vault key.");
             return new SecretLookup(0, null);
         }
+        final String requestUrl = url;
         String path = safePath(vaultKey);
         try (SimpleHttpResponse response = executeWithRetry("read-secret", path,
                 () -> applyVaultHeaders(SimpleHttp.create(session).withRequestConfig(requestConfig)
-                        .doGet(url), token)
+                .doGet(requestUrl), token)
                         .acceptJson())) {
             int status = response.getStatus();
             if (status == 404) {
@@ -93,6 +104,39 @@ public final class HashicorpVaultClient {
         } catch (IOException e) {
             log.errorf(e, "Vault secret lookup failed unexpectedly. path=%s", path);
             return new SecretLookup(0, null);
+        }
+    }
+
+    /**
+     * Reads KV v2 version metadata without reading or logging the secret data payload.
+     * A missing, deleted, or destroyed version is represented by the returned status/flags.
+     */
+    public SecretMetadata readSecretMetadata(KeycloakSession session, String token, String vaultKey, int version) {
+        String url;
+        try {
+            url = VaultPathResolver.metadataUrl(config, vaultKey);
+        } catch (IllegalArgumentException e) {
+            log.warn("Refusing to retrieve metadata for an unsafe Vault key or a KV v1 mount.");
+            return new SecretMetadata(0, null, null, false, false);
+        }
+        String path = safePath(vaultKey);
+        try (SimpleHttpResponse response = executeWithRetry("read-secret-metadata", path,
+                () -> applyVaultHeaders(SimpleHttp.create(session).withRequestConfig(requestConfig)
+                        .doGet(url), token).acceptJson())) {
+            int status = response.getStatus();
+            if (status < 200 || status >= 300) {
+                if (status != 404) {
+                    logMappingFailure(VaultErrorMapper.mapStatus("read-secret-metadata", path, status));
+                }
+                return new SecretMetadata(status, null, null, false, false);
+            }
+            return extractMetadata(status, JsonSerialization.mapper.readTree(response.asString()), version);
+        } catch (VaultException e) {
+            logMappingFailure(e);
+            return new SecretMetadata(e.getHttpStatus(), null, null, false, false);
+        } catch (IOException e) {
+            log.errorf(e, "Vault secret metadata lookup failed unexpectedly. path=%s", path);
+            return new SecretMetadata(0, null, null, false, false);
         }
     }
 
@@ -265,6 +309,13 @@ public final class HashicorpVaultClient {
         return VaultPathResolver.deleteUrl(config, vaultKey);
     }
 
+    static String versionedSecretUrl(HashicorpVaultConfig config, String vaultKey, int version) {
+        if (config.getKvVersion() != 2 || version < 1) {
+            throw new IllegalArgumentException("A Vault secret version requires KV v2 and a positive version");
+        }
+        return secretUrl(config, vaultKey) + "?version=" + version;
+    }
+
     SimpleHttpRequest applyVaultHeaders(SimpleHttpRequest request, String token) {
         if (token != null && !token.isEmpty()) {
             request = request.header("X-Vault-Token", token);
@@ -293,6 +344,19 @@ public final class HashicorpVaultClient {
             return null;
         }
         return value.asText();
+    }
+
+    static SecretMetadata extractMetadata(int status, JsonNode root, int version) {
+        JsonNode data = root == null ? null : root.path("data");
+        if (data == null || data.isMissingNode()) {
+            return new SecretMetadata(status, null, null, false, false);
+        }
+        int currentVersion = data.path("current_version").asInt(0);
+        JsonNode versionData = version > 0 ? data.path("versions").path(String.valueOf(version)) : data;
+        String createdTime = versionData.path("created_time").asText(null);
+        boolean deleted = versionData.path("deletion_time").asText("").length() > 0;
+        boolean destroyed = versionData.path("destroyed").asBoolean(false);
+        return new SecretMetadata(status, currentVersion == 0 ? null : currentVersion, createdTime, deleted, destroyed);
     }
 
     /** Vault paths never contain secret values, only mount/realm/key segments: safe to log. */
@@ -334,6 +398,13 @@ public final class HashicorpVaultClient {
 
         public boolean isForbidden() {
             return status == 403;
+        }
+    }
+
+    public record SecretMetadata(int status, Integer currentVersion, String createdTime, boolean deleted,
+                                 boolean destroyed) {
+        public boolean found() {
+            return status >= 200 && status < 300;
         }
     }
 

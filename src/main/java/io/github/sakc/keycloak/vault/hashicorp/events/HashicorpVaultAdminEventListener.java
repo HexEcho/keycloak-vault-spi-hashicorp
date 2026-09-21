@@ -16,6 +16,9 @@
 package io.github.sakc.keycloak.vault.hashicorp.events;
 
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultExpressions;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultConfig;
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProviderFactory;
+import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCacheKey;
 import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
 import org.infinispan.Cache;
 import org.jboss.logging.Logger;
@@ -25,7 +28,6 @@ import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 
-import java.io.File;
 import java.util.List;
 
 /**
@@ -64,18 +66,24 @@ public class HashicorpVaultAdminEventListener implements EventListenerProvider {
         if (keys.isEmpty()) {
             return;
         }
-        Cache<String, String> cache = HashicorpVaultCaches.get(session);
+        String realmName = realmName(event.getRealmId());
+        HashicorpVaultProviderFactory factory = ClientSecretVaultSync.vaultFactory(session);
+        HashicorpVaultConfig config = factory == null ? null : factory.vaultConfig();
+        if (realmName == null || config == null) {
+            return;
+        }
+        Cache<String, String> cache = HashicorpVaultCaches.get(session, config);
         if (cache == null) {
             return;
         }
-        String realmName = realmName(event.getRealmId());
         for (String key : keys) {
-            cache.remove(key);
-            if (realmName != null) {
-                cache.remove(escape(realmName) + "_" + escape(key));
-                cache.remove(realmName + File.separator + key);
+            try {
+                String vaultKey = factory.resolveKey(realmName, key);
+                cache.remove(HashicorpVaultCacheKey.forSecret(realmName, vaultKey, config).asString());
+                log.debugf("Invalidated HashiCorp vault cache entry for key %s", key);
+            } catch (IllegalArgumentException e) {
+                log.warnf("Refusing to invalidate an unsafe HashiCorp vault cache key %s", key);
             }
-            log.debugf("Invalidated HashiCorp vault cache entries for key %s", key);
         }
     }
 

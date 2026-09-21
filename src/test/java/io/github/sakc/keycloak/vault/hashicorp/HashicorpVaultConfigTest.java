@@ -36,6 +36,8 @@ class HashicorpVaultConfigTest {
         assertEquals("value", config.getKvField());
         assertEquals(300_000L, config.getCacheTtlMs());
         assertTrue(config.cacheEnabled());
+        assertEquals(10_000, config.getCacheMaxEntries());
+        assertNull(config.getKvReadVersion());
         assertEquals("token", config.getAuthMethod());
         assertNull(config.getNamespace());
     }
@@ -46,6 +48,17 @@ class HashicorpVaultConfigTest {
                 "cache-ttl", "0"
         )));
         assertFalse(config.cacheEnabled());
+    }
+
+    @Test
+    void configuresCacheAndVersionedKvV2Reads() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "cache-enabled", "false", "cache-ttl", "1000", "cache-max-entries", "25", "kv-read-version", "3"
+        )));
+        assertFalse(config.cacheEnabled());
+        assertEquals(1_000L, config.getCacheTtlMs());
+        assertEquals(25, config.getCacheMaxEntries());
+        assertEquals(3, config.getKvReadVersion());
     }
 
     @Test

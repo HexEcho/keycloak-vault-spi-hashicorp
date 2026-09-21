@@ -21,6 +21,7 @@ import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultExpressions;
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProvider;
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProviderFactory;
 import io.github.sakc.keycloak.vault.hashicorp.VaultSecretService;
+import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCacheKey;
 import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
 import org.infinispan.Cache;
 import org.jboss.logging.Logger;
@@ -32,7 +33,6 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.vault.VaultProvider;
 
-import java.util.concurrent.TimeUnit;
 
 /**
  * Writes a generated client secret to HashiCorp KV and stores {@code ${vault.clientId}} in Keycloak.
@@ -137,7 +137,7 @@ public final class ClientSecretVaultSync {
             }
             client.setSecret(HashicorpVaultExpressions.pointer(client.getClientId()));
             client.updateClient();
-            cachePut(session, config, vaultKey, secret);
+            cacheRemove(session, config, realm.getName(), vaultKey);
             log.infof("Stored client secret in HashiCorp Vault at key %s and set Keycloak secret to %s",
                     vaultKey, HashicorpVaultExpressions.pointer(client.getClientId()));
         } finally {
@@ -174,7 +174,7 @@ public final class ClientSecretVaultSync {
 
         HashicorpVaultClient.DeleteResult result = secretService.deleteSecret(session, vaultKey);
         if (result.success()) {
-            cacheRemove(session, config, vaultKey);
+            cacheRemove(session, config, realm.getName(), vaultKey);
             log.infof("Deleted client secret from HashiCorp Vault at key %s", vaultKey);
         } else {
             log.errorf("Failed to delete client secret from Vault for key %s. HTTP %d.", vaultKey, result.status());
@@ -212,23 +212,10 @@ public final class ClientSecretVaultSync {
         }
     }
 
-    private static void cachePut(KeycloakSession session, HashicorpVaultConfig config, String vaultKey, String secret) {
-        if (!config.cacheEnabled()) {
-            return;
-        }
-        Cache<String, String> cache = HashicorpVaultCaches.get(session);
+    private static void cacheRemove(KeycloakSession session, HashicorpVaultConfig config, String realm, String vaultKey) {
+        Cache<String, String> cache = HashicorpVaultCaches.get(session, config);
         if (cache != null) {
-            cache.put(vaultKey, secret, config.getCacheTtlMs(), TimeUnit.MILLISECONDS);
-        }
-    }
-
-    private static void cacheRemove(KeycloakSession session, HashicorpVaultConfig config, String vaultKey) {
-        if (!config.cacheEnabled()) {
-            return;
-        }
-        Cache<String, String> cache = HashicorpVaultCaches.get(session);
-        if (cache != null) {
-            cache.remove(vaultKey);
+            cache.remove(HashicorpVaultCacheKey.forSecret(realm, vaultKey, config).asString());
         }
     }
 }
