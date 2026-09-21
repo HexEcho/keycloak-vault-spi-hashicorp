@@ -34,7 +34,7 @@ This document is the canonical property reference for the HashiCorp Vault SPI. A
 | retry-max-delay-ms | long ms | 1000 | No | No | Yes | Max retry delay. |
 | health-check-enabled | boolean | false | No | No | Yes | Enable background Vault health checks. |
 | health-check-interval-ms | long ms | 30000 | No | No | Yes | Delay between health probes. |
-| key-resolvers | string | REALM_UNDERSCORE_KEY | No | No | Yes | Comma-separated Keycloak vault resolvers. Use `REALM_FILESEPARATOR_KEY` for realm-scoped layouts. |
+| key-resolvers | string | REALM_FILESEPARATOR_KEY | No | No | Yes | Comma-separated Keycloak vault resolvers. Use `REALM_UNDERSCORE_KEY` only for legacy realm + underscore layouts. |
 
 ## Production recommendation
 

@@ -100,7 +100,7 @@ Keycloak resolvers turn that into a Vault path. With `key-resolvers=REALM_FILESE
 |---|---|---|---|
 | `demo` | `${vault.xyz}` | `{url}/v1/secret/data/demo/xyz` | `value` (default) |
 
-Default resolver `REALM_UNDERSCORE_KEY` would use `secret/data/demo_xyz` instead.
+Legacy resolver `REALM_UNDERSCORE_KEY` would use `secret/data/demo_xyz`; this is only for older layouts and is not the default.
 
 Request shape:
 
@@ -336,7 +336,7 @@ If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not c
 | `kv-mount` | `--spi-vault--hashicorp--kv-mount` | `secret` | If KV is not mounted at `secret` |
 | `kv-version` | `--spi-vault--hashicorp--kv-version` | `2` | `1` only if the mount is KV v1 |
 | `kv-field` | `--spi-vault--hashicorp--kv-field` | `value` | If secrets are not stored in field `value` |
-| `key-resolvers` | `--spi-vault--hashicorp--key-resolvers` | `REALM_UNDERSCORE_KEY` | Set `REALM_FILESEPARATOR_KEY` for `{realm}/{key}` folders |
+| `key-resolvers` | `--spi-vault--hashicorp--key-resolvers` | `REALM_FILESEPARATOR_KEY` | Use `REALM_UNDERSCORE_KEY` only for legacy `{realm_key}` layouts |
 | `cache-ttl` | `--spi-vault--hashicorp--cache-ttl` | `300000` (ms) | `0` disables Infinispan caching |
 | `cache-enabled` | `--spi-vault--hashicorp--cache-enabled` | `true` | Set `false` to disable cached reads regardless of TTL |
 | `cache-max-entries` | `--spi-vault--hashicorp--cache-max-entries` | `10000` | Per-node bound for the local secret cache; takes effect when the cache is first created |

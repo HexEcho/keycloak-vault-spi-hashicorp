@@ -59,6 +59,10 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
     @Override
     public void init(Config.Scope config) {
         super.init(config);
+        if (config.get(KEY_RESOLVERS) == null && keyResolvers != null && !keyResolvers.isEmpty()) {
+            keyResolvers.clear();
+            keyResolvers.add((realm, key) -> realm + "/" + key);
+        }
         this.vaultConfig = HashicorpVaultConfig.from(config);
         this.client = new HashicorpVaultClient(vaultConfig);
         this.tokenProvider = createTokenProvider(config, vaultConfig, client);
@@ -114,7 +118,7 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
         if (keyResolvers != null && !keyResolvers.isEmpty()) {
             return keyResolvers.get(0).apply(realm, key);
         }
-        return realm + "_" + key;
+        return realm + "/" + key;
     }
 
     /**
@@ -336,7 +340,7 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
                 .property()
                 .name(KEY_RESOLVERS)
                 .label("Key resolvers")
-                .helpText("Comma-separated Keycloak vault key resolvers (default REALM_UNDERSCORE_KEY).")
+                .helpText("Comma-separated Keycloak vault key resolvers (default REALM_FILESEPARATOR_KEY).")
                 .type(ProviderConfigProperty.STRING_TYPE)
                 .add()
                 .build();

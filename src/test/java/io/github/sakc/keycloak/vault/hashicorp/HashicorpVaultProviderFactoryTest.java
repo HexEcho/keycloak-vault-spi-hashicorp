@@ -88,6 +88,17 @@ class HashicorpVaultProviderFactoryTest {
     }
 
     @Test
+    void resolveKeyUsesForwardSlashByDefault() {
+        HashicorpVaultProviderFactory factory = new HashicorpVaultProviderFactory();
+        factory.init(new MapScope(Map.of("url", "http://vault:8200")));
+        try {
+            org.junit.jupiter.api.Assertions.assertEquals("demo/my-client", factory.resolveKey("demo", "my-client"));
+        } finally {
+            factory.close();
+        }
+    }
+
+    @Test
     void resolveManagedKeyReturnsNullWhenNotConfiguredPreservingBackwardCompatiblePath() {
         HashicorpVaultProviderFactory factory = new HashicorpVaultProviderFactory();
         factory.init(new MapScope(Map.of("url", "http://vault:8200")));
