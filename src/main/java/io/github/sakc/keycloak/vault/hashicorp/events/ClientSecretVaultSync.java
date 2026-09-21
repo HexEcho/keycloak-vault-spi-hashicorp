@@ -123,9 +123,9 @@ public final class ClientSecretVaultSync {
         if (realm == null) {
             return;
         }
-        String vaultKey = factory.resolveKey(realm.getName(), client.getClientId());
-        if (!HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
-            log.warnf("Refusing to write client secret for unsafe vault key %s", vaultKey);
+        String vaultKey = resolveVaultKey(factory, realm.getName(), client.getClientId());
+        if (vaultKey == null || !HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
+            log.warn("Refusing to write client secret for an unsafe or unresolvable vault key.");
             return;
         }
 
@@ -180,9 +180,9 @@ public final class ClientSecretVaultSync {
             return;
         }
 
-        String vaultKey = factory.resolveKey(realm.getName(), clientId);
-        if (!HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
-            log.warnf("Refusing to delete client secret for unsafe vault key %s", vaultKey);
+        String vaultKey = resolveVaultKey(factory, realm.getName(), clientId);
+        if (vaultKey == null || !HashicorpVaultProvider.isSafeResolvedKey(vaultKey)) {
+            log.warn("Refusing to delete client secret for an unsafe or unresolvable vault key.");
             return;
         }
 
@@ -221,6 +221,21 @@ public final class ClientSecretVaultSync {
         }
         ClientModel client = session.clients().getClientById(realm, clientUuid);
         sync(session, client);
+    }
+
+    /**
+     * Resolves the write/delete path for a managed client secret. When {@code managed-secret-prefix}
+     * is configured this uses the explicit {@code <realm>/<prefix>/<clientId>} namespace so SPI-managed
+     * secrets never collide with, or get treated as, an externally managed Vault entry. Otherwise it
+     * falls back to the existing key-resolver path for backward compatibility.
+     */
+    private static String resolveVaultKey(HashicorpVaultProviderFactory factory, String realmName, String clientId) {
+        try {
+            String managed = factory.resolveManagedKey(realmName, clientId);
+            return managed != null ? managed : factory.resolveKey(realmName, clientId);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static void cachePut(KeycloakSession session, HashicorpVaultConfig config, String vaultKey, String secret) {

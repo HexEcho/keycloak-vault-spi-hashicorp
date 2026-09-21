@@ -38,6 +38,9 @@ public final class HashicorpVaultConfig {
     public static final String AUTH_TOKEN = "token";
     public static final String AUTH_APPROLE = "approle";
     public static final String AUTH_CERT = "cert";
+    public static final String AUTH_KUBERNETES = "kubernetes";
+    public static final String DEFAULT_KUBERNETES_MOUNT_PATH = "kubernetes";
+    public static final String DEFAULT_KUBERNETES_JWT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
     private static final Set<String> CERT_ALIASES = Set.of("cert", "certificate", "tls", "tls-cert");
 
@@ -48,9 +51,10 @@ public final class HashicorpVaultConfig {
     private final int kvVersion;
     private final String kvField;
     private final long cacheTtlMs;
+    private final String managedSecretPrefix;
 
     private HashicorpVaultConfig(String url, String authMethod, String namespace, String kvMount, int kvVersion,
-                                  String kvField, long cacheTtlMs) {
+                                  String kvField, long cacheTtlMs, String managedSecretPrefix) {
         this.url = url;
         this.authMethod = authMethod;
         this.namespace = namespace;
@@ -58,6 +62,7 @@ public final class HashicorpVaultConfig {
         this.kvVersion = kvVersion;
         this.kvField = kvField;
         this.cacheTtlMs = cacheTtlMs;
+        this.managedSecretPrefix = managedSecretPrefix;
     }
 
     public static HashicorpVaultConfig from(Config.Scope config) {
@@ -72,7 +77,9 @@ public final class HashicorpVaultConfig {
         }
         String kvField = config.get("kv-field", DEFAULT_KV_FIELD);
         long cacheTtlMs = config.getLong("cache-ttl", DEFAULT_CACHE_TTL_MS);
-        return new HashicorpVaultConfig(url, authMethod, namespace, kvMount, kvVersion, kvField, cacheTtlMs);
+        String managedSecretPrefix = blankToNull(config.get("managed-secret-prefix"));
+        return new HashicorpVaultConfig(url, authMethod, namespace, kvMount, kvVersion, kvField, cacheTtlMs,
+                managedSecretPrefix);
     }
 
     public String getUrl() {
@@ -107,12 +114,21 @@ public final class HashicorpVaultConfig {
         return cacheTtlMs > 0;
     }
 
+    /**
+     * Optional sub-path (for example {@code managed}) that separates confidential-client
+     * secrets this SPI creates and owns from secrets an operator manages directly in Vault.
+     * {@code null} preserves the existing (pre-hardening) path layout for backward compatibility.
+     */
+    public String getManagedSecretPrefix() {
+        return managedSecretPrefix;
+    }
+
     static String normalizeAuthMethod(String authMethod) {
         if (authMethod == null || authMethod.isBlank()) {
             return AUTH_TOKEN;
         }
         String normalized = authMethod.trim().toLowerCase(Locale.ROOT);
-        if (AUTH_TOKEN.equals(normalized) || AUTH_APPROLE.equals(normalized)) {
+        if (AUTH_TOKEN.equals(normalized) || AUTH_APPROLE.equals(normalized) || AUTH_KUBERNETES.equals(normalized)) {
             return normalized;
         }
         if (CERT_ALIASES.contains(normalized)) {

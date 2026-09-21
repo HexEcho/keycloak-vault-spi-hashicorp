@@ -41,7 +41,13 @@ public final class HashicorpVaultClient {
     }
 
     public SecretLookup readSecret(KeycloakSession session, String token, String vaultKey) {
-        String url = secretUrl(config, vaultKey);
+        String url;
+        try {
+            url = secretUrl(config, vaultKey);
+        } catch (IllegalArgumentException e) {
+            log.warn("Refusing to read a secret for an unsafe Vault key.");
+            return new SecretLookup(0, null);
+        }
         try (SimpleHttpResponse response = applyVaultHeaders(SimpleHttp.create(session)
                 .doGet(url), token)
                 .acceptJson()
@@ -73,7 +79,13 @@ public final class HashicorpVaultClient {
     }
 
     public WriteResult writeSecret(KeycloakSession session, String token, String vaultKey, String secret) {
-        String url = secretUrl(config, vaultKey);
+        String url;
+        try {
+            url = secretUrl(config, vaultKey);
+        } catch (IllegalArgumentException e) {
+            log.warn("Refusing to write a secret for an unsafe Vault key.");
+            return new WriteResult(0);
+        }
         try (SimpleHttpResponse response = applyVaultHeaders(SimpleHttp.create(session)
                 .doPut(url), token)
                 .json(writeBody(config, secret))
@@ -90,7 +102,13 @@ public final class HashicorpVaultClient {
     }
 
     public DeleteResult deleteSecret(KeycloakSession session, String token, String vaultKey) {
-        String url = deleteUrl(config, vaultKey);
+        String url;
+        try {
+            url = deleteUrl(config, vaultKey);
+        } catch (IllegalArgumentException e) {
+            log.warn("Refusing to delete a secret for an unsafe Vault key.");
+            return new DeleteResult(0);
+        }
         try (SimpleHttpResponse response = applyVaultHeaders(SimpleHttp.create(session)
                 .doDelete(url), token)
                 .asResponse()) {
@@ -122,27 +140,11 @@ public final class HashicorpVaultClient {
     }
 
     static String secretUrl(HashicorpVaultConfig config, String vaultKey) {
-        StringBuilder url = new StringBuilder(config.getUrl())
-                .append("/v1/")
-                .append(config.getKvMount());
-        if (config.getKvVersion() == 2) {
-            url.append("/data/");
-        } else {
-            url.append('/');
-        }
-        return url.append(vaultKey).toString();
+        return VaultPathResolver.secretUrl(config, vaultKey);
     }
 
     static String deleteUrl(HashicorpVaultConfig config, String vaultKey) {
-        StringBuilder url = new StringBuilder(config.getUrl())
-                .append("/v1/")
-                .append(config.getKvMount());
-        if (config.getKvVersion() == 2) {
-            url.append("/metadata/");
-        } else {
-            url.append('/');
-        }
-        return url.append(vaultKey).toString();
+        return VaultPathResolver.deleteUrl(config, vaultKey);
     }
 
     SimpleHttpRequest applyVaultHeaders(SimpleHttpRequest request, String token) {

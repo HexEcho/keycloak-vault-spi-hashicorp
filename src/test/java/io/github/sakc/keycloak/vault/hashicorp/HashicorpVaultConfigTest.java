@@ -72,4 +72,31 @@ class HashicorpVaultConfigTest {
         assertEquals("approle", HashicorpVaultConfig.normalizeAuthMethod("AppRole"));
         assertEquals("token", HashicorpVaultConfig.normalizeAuthMethod("unknown"));
     }
+
+    @Test
+    void recognizesKubernetesAuthMethod() {
+        assertEquals("kubernetes", HashicorpVaultConfig.normalizeAuthMethod("kubernetes"));
+        assertEquals("kubernetes", HashicorpVaultConfig.normalizeAuthMethod("Kubernetes"));
+    }
+
+    @Test
+    void managedSecretPrefixIsUnsetByDefaultForBackwardCompatibility() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "url", "http://127.0.0.1:8200"
+        )));
+        assertNull(config.getManagedSecretPrefix());
+    }
+
+    @Test
+    void managedSecretPrefixIsTrimmedAndBlankTreatedAsUnset() {
+        HashicorpVaultConfig configured = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "managed-secret-prefix", "  managed  "
+        )));
+        assertEquals("managed", configured.getManagedSecretPrefix());
+
+        HashicorpVaultConfig blank = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "managed-secret-prefix", "   "
+        )));
+        assertNull(blank.getManagedSecretPrefix());
+    }
 }

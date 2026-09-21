@@ -103,9 +103,7 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
     }
 
     public static boolean isSafeResolvedKey(String resolvedKey) {
-        return resolvedKey != null && !resolvedKey.isEmpty()
-                && !resolvedKey.contains("..")
-                && resolvedKey.indexOf('\0') < 0;
+        return VaultPathResolver.isSafeResolvedKey(resolvedKey);
     }
 
     private String cacheGet(String vaultKey) {

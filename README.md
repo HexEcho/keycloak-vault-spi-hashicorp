@@ -173,34 +173,46 @@ LDAP / SMTP / IdP: create the KV entry **before** putting `${vault.key}` in Keyc
 
 Confidential clients: this SPI can `PUT` the path for you on create/regenerate. The policy must still allow write.
 
-### 3. Policy (read, and write for client secrets)
+### 3. Policy (least privilege, read and write for client secrets)
 
-Minimum capabilities for lookup:
+Prefer a **realm-scoped** policy over a wildcard across every realm. With `key-resolvers=REALM_FILESEPARATOR_KEY` each realm's secrets live under `secret/data/<realm>/...`, so a policy can be written per realm (or per tenant):
 
 ```hcl
-path "secret/data/*" {
+# Read-only lookup, one realm only
+path "secret/data/<realm>/*" {
   capabilities = ["read"]
 }
 ```
 
-For client create / regenerate (this SPI writes KV):
+For client create / regenerate (this SPI writes KV) in that same realm only:
 
 ```hcl
-path "secret/data/*" {
+path "secret/data/<realm>/*" {
   capabilities = ["create", "update", "read"]
 }
 
-# optional, so operators can list realm folders
-path "secret/metadata/*" {
+# optional, so operators can list that realm's folder
+path "secret/metadata/<realm>/*" {
   capabilities = ["list"]
 }
 ```
 
-Adjust the mount prefix if `kv-mount` is not `secret`. On Enterprise, create this policy **inside the namespace** Keycloak will use.
+If `managed-secret-prefix` is set (see [Managed vs externally managed secrets](#managed-vs-externally-managed-secrets)), scope the write capability further to just that sub-path so this SPI can never write or delete outside its own namespace:
+
+```hcl
+path "secret/data/<realm>/<managed-secret-prefix>/*" {
+  capabilities = ["create", "update", "read"]
+}
+path "secret/metadata/<realm>/<managed-secret-prefix>/*" {
+  capabilities = ["read", "delete"]
+}
+```
+
+Only fall back to a mount-wide policy (`path "secret/data/*" { capabilities = ["read"] }`) when a single Vault token must legitimately serve every realm (for example a shared AppRole used by all of a multi-realm Keycloak's realms) — this is a deliberate, documented trade-off, not the default recommendation. Substitute your own `kv-mount` if it is not `secret`. On Enterprise, create the policy **inside the namespace** Keycloak will use.
 
 ### 4. Authentication method on Vault
 
-Enable **one** of token, AppRole, or cert. Details are under [Authentication with HashiCorp](#authentication-with-hashicorp).
+Enable **one** of token, AppRole, Kubernetes, or cert. Details are under [Authentication with HashiCorp](#authentication-with-hashicorp).
 
 ### 5. Namespace (Enterprise only)
 
@@ -246,7 +258,7 @@ Always set the provider (mandatory):
 | Property | CLI | Default | Required? |
 |---|---|---|---|
 | `url` | `--spi-vault--hashicorp--url` | `http://127.0.0.1:8200` | **Required in production.** Default is only for local Vault. |
-| `auth-method` | `--spi-vault--hashicorp--auth-method` | `token` | **Required to choose.** Values: `token`, `approle`, `cert` (aliases: `certificate`, `tls`, `tls-cert`). |
+| `auth-method` | `--spi-vault--hashicorp--auth-method` | `token` | **Required to choose.** Values: `token`, `approle`, `kubernetes`, `cert` (aliases: `certificate`, `tls`, `tls-cert`). |
 
 ### Required depending on `auth-method`
 
@@ -254,9 +266,10 @@ Always set the provider (mandatory):
 |---|---|---|
 | `token` | `--spi-vault--hashicorp--token` | — |
 | `approle` | `--spi-vault--hashicorp--approle-role-id` **and** `--spi-vault--hashicorp--approle-secret-id` | `--spi-vault--hashicorp--approle-mount-path` (default `approle`) |
+| `kubernetes` | `--spi-vault--hashicorp--kubernetes-role` | `--spi-vault--hashicorp--kubernetes-mount-path` (default `kubernetes`), `--spi-vault--hashicorp--kubernetes-jwt-path` (default `/var/run/secrets/kubernetes.io/serviceaccount/token`) |
 | `cert` | Keycloak outbound client keystore (see cert section). Vault must have `auth/cert` enabled and trust that certificate. | `--spi-vault--hashicorp--cert-name` (Vault cert role name), `--spi-vault--hashicorp--cert-mount-path` (default `cert`) |
 
-If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not configured`). If AppRole ids are missing, login fails. There is no fallback to another method.
+If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not configured`). If AppRole or Kubernetes configuration is missing, login fails explicitly (no fallback to another method, and **no static Vault token is required** for `approle` or `kubernetes`).
 
 ### Optional (safe defaults)
 
@@ -268,6 +281,7 @@ If `auth-method=token` and `token` is empty, lookups fail (`Vault token is not c
 | `kv-field` | `--spi-vault--hashicorp--kv-field` | `value` | If secrets are not stored in field `value` |
 | `key-resolvers` | `--spi-vault--hashicorp--key-resolvers` | `REALM_UNDERSCORE_KEY` | Set `REALM_FILESEPARATOR_KEY` for `{realm}/{key}` folders |
 | `cache-ttl` | `--spi-vault--hashicorp--cache-ttl` | `300000` (ms) | `0` disables Infinispan caching |
+| `managed-secret-prefix` | `--spi-vault--hashicorp--managed-secret-prefix` | unset | Set (for example `managed`) to isolate SPI-written confidential-client secrets under `<realm>/<prefix>/<clientId>`, see [Managed vs externally managed secrets](#managed-vs-externally-managed-secrets). Unset preserves the existing path. |
 
 ### Other Keycloak SPI used by this product (not this JAR’s properties)
 
@@ -340,7 +354,39 @@ Optional: `--spi-vault--hashicorp--approle-mount-path=approle`, `--spi-vault--ha
 
 Login used by this SPI: `POST {url}/v1/auth/{mount}/login` with `role_id` and `secret_id`.
 
-### C. TLS / certificate
+### C. Kubernetes
+
+Vault authenticates the pod's projected service-account JWT against the Kubernetes API. This SPI reads the JWT from disk **fresh for every login attempt**; it is never cached in memory beyond that single call, never persisted, and never logged.
+
+**Vault**
+
+```bash
+vault auth enable kubernetes
+vault write auth/kubernetes/config \
+  kubernetes_host="https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT"
+
+vault write auth/kubernetes/role/keycloak \
+  bound_service_account_names=keycloak \
+  bound_service_account_namespaces=keycloak \
+  policies=keycloak \
+  ttl=1h
+```
+
+**Keycloak (mandatory: `kubernetes-role`; optional: `kubernetes-mount-path`, `kubernetes-jwt-path`)**
+
+```bash
+bin/kc.sh start \
+  --spi-vault--provider=hashicorp \
+  --spi-vault--hashicorp--url=https://vault.example.com:8200 \
+  --spi-vault--hashicorp--auth-method=kubernetes \
+  --spi-vault--hashicorp--kubernetes-role=keycloak \
+  --spi-vault--hashicorp--kubernetes-mount-path=kubernetes \
+  --spi-vault--hashicorp--kubernetes-jwt-path=/var/run/secrets/kubernetes.io/serviceaccount/token
+```
+
+Login used by this SPI: `POST {url}/v1/auth/{kubernetes-mount-path}/login` with body `{"role": "<kubernetes-role>", "jwt": "<service-account-jwt>"}`. No `--spi-vault--hashicorp--token` is required or read when `auth-method=kubernetes`. A missing/empty/unreadable JWT file, a missing role, or a Vault-side rejection all fail the login explicitly (return no token) instead of retrying indefinitely; the calling vault lookup then fails closed rather than falling back to another auth method.
+
+### D. TLS / certificate
 
 Vault cert auth is **mTLS**, not a PEM pasted into this SPI. Keycloak’s outbound HTTP client presents the client certificate. This SPI then `POST`s `{url}/v1/auth/{cert-mount}/login` (optional JSON `{"name":"<cert-name>"}`) and caches `auth.client_token`.
 
@@ -370,6 +416,21 @@ bin/kc.sh start \
 ```
 
 `auth-method` may be `cert`, `certificate`, `tls`, or `tls-cert`. Trust Vault’s server certificate with Keycloak’s truststore.
+
+## Managed vs externally managed secrets
+
+Secrets in Vault fall into two categories:
+
+* **Managed** — confidential-client secrets this SPI itself writes on client create/regenerate and removes on client delete.
+* **Externally managed** — anything an operator puts in Vault directly (LDAP bind password, SMTP password, IdP client secret, or a confidential-client secret an operator chose to manage by hand).
+
+By default (`managed-secret-prefix` unset) managed secrets share the same `<realm>/<clientId>` path as before, for backward compatibility. Setting `--spi-vault--hashicorp--managed-secret-prefix=managed` moves every managed secret this SPI writes or deletes to an explicit, separate namespace:
+
+```text
+secret/data/<realm>/managed/<clientId>
+```
+
+This SPI never deletes a Vault entry unless: (1) the corresponding Keycloak client's stored secret is still the exact `${vault.<clientId>}` pointer this SPI wrote, and (2) the resolved path passes `VaultPathResolver` validation. An operator-managed secret at any other path, or a path an admin has since repointed by hand, is left untouched. Migrating an existing deployment to `managed-secret-prefix` does not move already-written secrets — write (or let a secret regenerate) once after changing the setting so the new path is populated, and manually remove the old-path entry if it is no longer needed.
 
 ## Full start examples
 

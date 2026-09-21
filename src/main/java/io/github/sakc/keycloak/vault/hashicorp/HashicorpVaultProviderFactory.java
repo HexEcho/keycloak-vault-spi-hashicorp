@@ -17,6 +17,7 @@ package io.github.sakc.keycloak.vault.hashicorp;
 
 import io.github.sakc.keycloak.vault.hashicorp.auth.AppRoleTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.CertTokenProvider;
+import io.github.sakc.keycloak.vault.hashicorp.auth.KubernetesTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.StaticTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
 import org.jboss.logging.Logger;
@@ -98,6 +99,19 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
         return realm + "_" + key;
     }
 
+    /**
+     * Deterministic, realm-isolated path for a secret this SPI creates and owns, kept apart from
+     * externally managed Vault entries. Returns {@code null} (caller falls back to {@link #resolveKey})
+     * when {@code managed-secret-prefix} is not configured, preserving the pre-hardening path layout.
+     */
+    public String resolveManagedKey(String realm, String key) {
+        String prefix = vaultConfig == null ? null : vaultConfig.getManagedSecretPrefix();
+        if (prefix == null) {
+            return null;
+        }
+        return VaultPathResolver.managedKey(realm, prefix, key);
+    }
+
     @Override
     public String getId() {
         return PROVIDER_ID;
@@ -119,7 +133,7 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
                 .helpText("Vault authentication method.")
                 .type(ProviderConfigProperty.LIST_TYPE)
                 .options(List.of(HashicorpVaultConfig.AUTH_TOKEN, HashicorpVaultConfig.AUTH_APPROLE,
-                        HashicorpVaultConfig.AUTH_CERT))
+                        HashicorpVaultConfig.AUTH_CERT, HashicorpVaultConfig.AUTH_KUBERNETES))
                 .defaultValue(HashicorpVaultConfig.AUTH_TOKEN)
                 .add()
                 .property()
@@ -167,6 +181,34 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
                 .helpText("Vault mount path for the TLS certificate auth method.")
                 .type(ProviderConfigProperty.STRING_TYPE)
                 .defaultValue("cert")
+                .add()
+                .property()
+                .name("kubernetes-role")
+                .label("Kubernetes role")
+                .helpText("Vault Kubernetes auth role. Used when auth-method=kubernetes.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .add()
+                .property()
+                .name("kubernetes-mount-path")
+                .label("Kubernetes mount path")
+                .helpText("Vault mount path for the Kubernetes auth method.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(HashicorpVaultConfig.DEFAULT_KUBERNETES_MOUNT_PATH)
+                .add()
+                .property()
+                .name("kubernetes-jwt-path")
+                .label("Kubernetes JWT path")
+                .helpText("Path to the service account JWT file, read fresh on every Vault login and never logged or cached to disk.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(HashicorpVaultConfig.DEFAULT_KUBERNETES_JWT_PATH)
+                .add()
+                .property()
+                .name("managed-secret-prefix")
+                .label("Managed secret prefix")
+                .helpText("Optional sub-path (for example 'managed') separating confidential-client secrets this SPI "
+                        + "writes/deletes from secrets an operator manages directly in Vault. Unset preserves the "
+                        + "existing path layout.")
+                .type(ProviderConfigProperty.STRING_TYPE)
                 .add()
                 .property()
                 .name("kv-mount")
@@ -220,6 +262,15 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
             String certName = config.get("cert-name");
             String mountPath = config.get("cert-mount-path", "cert");
             return new CertTokenProvider(client, mountPath, certName);
+        }
+        if (HashicorpVaultConfig.AUTH_KUBERNETES.equals(vaultConfig.getAuthMethod())) {
+            String role = config.get("kubernetes-role");
+            String mountPath = config.get("kubernetes-mount-path", HashicorpVaultConfig.DEFAULT_KUBERNETES_MOUNT_PATH);
+            String jwtPath = config.get("kubernetes-jwt-path", HashicorpVaultConfig.DEFAULT_KUBERNETES_JWT_PATH);
+            if (role == null || role.isBlank()) {
+                log.error("Kubernetes auth-method selected but kubernetes-role is not configured.");
+            }
+            return KubernetesTokenProvider.forJwtFile(client, mountPath, role, jwtPath);
         }
         String token = config.get("token");
         if (token == null || token.isBlank()) {
