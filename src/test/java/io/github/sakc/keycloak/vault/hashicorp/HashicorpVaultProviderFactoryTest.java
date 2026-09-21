@@ -18,15 +18,35 @@ package io.github.sakc.keycloak.vault.hashicorp;
 import io.github.sakc.keycloak.vault.hashicorp.auth.KubernetesTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.StaticTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
+import io.github.sakc.keycloak.vault.hashicorp.exception.VaultConfigurationException;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HashicorpVaultProviderFactoryTest {
+
+    @Test
+    void kubernetesAuthMethodWithoutRoleFailsFastAtInit() {
+        HashicorpVaultProviderFactory factory = new HashicorpVaultProviderFactory();
+        assertThrows(VaultConfigurationException.class, () -> factory.init(new MapScope(Map.of(
+                "url", "http://vault:8200",
+                "auth-method", "kubernetes"
+        ))));
+    }
+
+    @Test
+    void approleAuthMethodWithoutCredentialsFailsFastAtInit() {
+        HashicorpVaultProviderFactory factory = new HashicorpVaultProviderFactory();
+        assertThrows(VaultConfigurationException.class, () -> factory.init(new MapScope(Map.of(
+                "url", "http://vault:8200",
+                "auth-method", "approle"
+        ))));
+    }
 
     @Test
     void kubernetesAuthMethodDoesNotRequireAStaticToken() {

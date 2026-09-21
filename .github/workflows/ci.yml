@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-unit-test:
+    name: Compile, unit test, package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Compile
+        run: mvn -B -ntp compile
+      - name: Unit tests
+        run: mvn -B -ntp test
+      - name: Package
+        run: mvn -B -ntp package -DskipTests
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: keycloak-vault-integration-hashicorp
+          path: target/*.jar
+
+  integration-test:
+    name: Integration tests (Testcontainers + real Vault)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Unit + integration tests
+        run: mvn -B -ntp verify
+        # Docker is preinstalled on GitHub-hosted ubuntu-latest runners; VaultContainerIT
+        # pulls hashicorp/vault and testcontainers/ryuk from Docker Hub. This job never
+        # talks to a production Vault, only ephemeral dev-mode containers it starts itself.

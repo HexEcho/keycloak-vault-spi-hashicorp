@@ -15,14 +15,40 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp;
 
+import io.github.sakc.keycloak.vault.hashicorp.exception.VaultConfigurationException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HashicorpVaultConfigTest {
+
+    @Test
+    void rejectsBlankUrl() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "  "))));
+    }
+
+    @Test
+    void rejectsMalformedUrl() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "not a url"))));
+    }
+
+    @Test
+    void rejectsNonHttpUrlScheme() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "ftp://vault:8200"))));
+    }
+
+    @Test
+    void rejectsUrlWithoutHost() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "http:///no-host"))));
+    }
 
     @Test
     void readsDefaultsAndNormalizesUrlAndMount() {

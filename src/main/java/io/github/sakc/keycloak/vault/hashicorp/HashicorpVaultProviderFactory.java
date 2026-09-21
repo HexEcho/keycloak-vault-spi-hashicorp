@@ -20,6 +20,7 @@ import io.github.sakc.keycloak.vault.hashicorp.auth.CertTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.KubernetesTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.StaticTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
+import io.github.sakc.keycloak.vault.hashicorp.exception.VaultConfigurationException;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.models.KeycloakSession;
@@ -348,7 +349,8 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
             String secretId = config.get("approle-secret-id");
             String mountPath = config.get("approle-mount-path", "approle");
             if (roleId == null || roleId.isBlank() || secretId == null || secretId.isBlank()) {
-                log.error("AppRole auth-method selected but approle-role-id or approle-secret-id is not configured.");
+                throw new VaultConfigurationException(
+                        "auth-method=approle requires both approle-role-id and approle-secret-id to be set.");
             }
             return new AppRoleTokenProvider(client, mountPath, roleId, secretId);
         }
@@ -362,7 +364,8 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
             String mountPath = config.get("kubernetes-mount-path", HashicorpVaultConfig.DEFAULT_KUBERNETES_MOUNT_PATH);
             String jwtPath = config.get("kubernetes-jwt-path", HashicorpVaultConfig.DEFAULT_KUBERNETES_JWT_PATH);
             if (role == null || role.isBlank()) {
-                log.error("Kubernetes auth-method selected but kubernetes-role is not configured.");
+                throw new VaultConfigurationException(
+                        "auth-method=kubernetes requires kubernetes-role to be set.");
             }
             return KubernetesTokenProvider.forJwtFile(client, mountPath, role, jwtPath);
         }

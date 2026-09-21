@@ -13,6 +13,51 @@ Do **not** set `--vault=file` or `--vault=keystore`. Select this provider with `
 
 **Runtime target:** Keycloak **26.4.10** (RHBK **26.4.12** is the tested distribution). Compile uses Maven Central **26.4.7** (last community 26.4.x); the Vault SPI matches 26.4.10.
 
+**Further reading:** [Keycloak version compatibility risks](KEYCLOAK_COMPATIBILITY.md) ·
+[OpenBao compatibility assessment](OPENBAO_ASSESSMENT.md) ·
+[Integration test matrix](INTEGRATION_TEST_MATRIX.md) ·
+[Migration / upgrade notes from the original clone](DIFFERENCE.md)
+
+---
+
+## Architecture
+
+This SPI is deliberately layered so HashiCorp Vault's HTTP/API specifics never leak into
+generic "get me a secret" call sites, and so the Keycloak-facing surface stays small:
+
+```mermaid
+flowchart TD
+    A["Keycloak core<br/>(realm config, LDAP, SMTP, OIDC clients)"] --> B["Keycloak Vault SPI<br/>AbstractVaultProvider / key resolvers"]
+    B --> C["HashicorpVaultProvider<br/>(this SPI's VaultProvider)"]
+    C --> D["VaultSecretService<br/>auth lifecycle: token -> request -> 403 -> reauth -> retry once"]
+    D --> E["HashicorpVaultClient<br/>HashiCorp HTTP/API specifics: KV paths, retry/backoff, error mapping"]
+    D --> F["auth/* token providers<br/>token, AppRole, Kubernetes, cert"]
+    E --> G[("HashiCorp Vault<br/>KV v1 / v2")]
+    F --> G
+    C --> H["Infinispan cache<br/>hashicorp-vault (LOCAL)"]
+    I["events/ClientSecretVaultSync<br/>events/HashicorpVaultAdminEventListener"] --> D
+    I --> H
+    J["clientauth/VaultAwareClientIdAndSecretAuthenticator"] --> B
+```
+
+| Layer | Class(es) | Responsibility |
+|---|---|---|
+| Keycloak SPI | `HashicorpVaultProvider`, `HashicorpVaultProviderFactory` | Implements Keycloak's `VaultProvider`/`VaultProviderFactory` contract; the only place that talks to Keycloak's key-resolver chain and config metadata. |
+| Secret service | `VaultSecretService` | Generic secret lifecycle (read/write/delete) plus the **one** place the token-refresh-on-403 retry loop is implemented. Knows nothing about HTTP, JSON, or KV path shapes. |
+| Secret-store abstraction | `HashicorpVaultClient.SecretLookup` / `WriteResult` / `DeleteResult` / `SecretMetadata` records, `VaultRetryPolicy`, `VaultErrorMapper`, `exception/*` | The status-code/typed-exception vocabulary the rest of the codebase (event listeners, client authenticator, health checker) is written against, independent of any single vendor's wire format. |
+| HashiCorp Vault implementation | `HashicorpVaultClient`, `VaultPathResolver`, `auth/*` | Everything that is specifically HashiCorp's HTTP API: KV v1/v2 URL shapes, request/response envelopes, login payloads for each auth method, `X-Vault-Token`/`X-Vault-Namespace` headers. |
+
+`VaultSecretService` and the secret-store abstraction (records + `VaultRetryPolicy` +
+`VaultErrorMapper` + `exception/*`) have **no import of anything Vault-specific in name**
+beyond the class names themselves — they operate purely on status codes, typed exceptions,
+and plain strings, so a second secret-store backend would only require a second
+implementation of the same `HashicorpVaultClient`-shaped surface, not changes to
+`VaultSecretService`, the event listeners, or the client authenticator. See the
+[OpenBao assessment](OPENBAO_ASSESSMENT.md) for why this project does not add a second
+backend today. Additional layering beyond this (for example a generic `SecretStore`
+interface with only one real implementation) was deliberately not introduced — it would add
+indirection without a second consumer to justify it.
+
 ---
 
 ## What this SPI does
@@ -543,6 +588,183 @@ Set the LDAP bind credential to `${vault.ldapBc}`. There is no write-back for LD
 * Listener id `hashicorp-vault` is **global** (regenerate works without adding it under Realm Settings → Events). You may still add it there if you want it listed.
 * Direct access grants must be on for the password-grant curl sample.
 * Do not use **Regenerate secret** expecting the old Vault value to remain; regenerate writes a new secret to Vault.
+
+## Kubernetes deployment example
+
+Minimal Keycloak `Deployment` snippet using Kubernetes auth (no static token or secret-id
+stored in the manifest); adjust image, resources, and probes for production use.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      serviceAccountName: keycloak
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.10
+          args: ["start", "--optimized"]
+          env:
+            - name: KC_SPI_VAULT__PROVIDER
+              value: hashicorp
+            - name: KC_SPI_VAULT__HASHICORP__URL
+              value: https://vault.vault.svc:8200
+            - name: KC_SPI_VAULT__HASHICORP__AUTH_METHOD
+              value: kubernetes
+            - name: KC_SPI_VAULT__HASHICORP__KUBERNETES_ROLE
+              value: keycloak
+            - name: KC_SPI_VAULT__HASHICORP__KEY_RESOLVERS
+              value: REALM_FILESEPARATOR_KEY
+          volumeMounts:
+            - name: kc-truststore
+              mountPath: /opt/keycloak/conf/truststores
+              readOnly: true
+      volumes:
+        - name: kc-truststore
+          secret:
+            secretName: vault-ca-truststore
+```
+
+Matching Vault-side setup (run once by a Vault administrator, not by Keycloak):
+
+```bash
+vault write auth/kubernetes/role/keycloak \
+  bound_service_account_names=keycloak \
+  bound_service_account_namespaces=keycloak \
+  policies=keycloak \
+  ttl=1h
+```
+
+The `keycloak` ServiceAccount's projected token is what Vault validates; no Vault
+credential is ever stored in the Kubernetes manifest, a Secret, or a ConfigMap.
+
+## Security
+
+**What this SPI stores where:**
+
+| Data | Stored in Keycloak | Stored in Vault |
+|---|---|---|
+| Confidential client secret (value) | Never (only the `${vault.{clientId}}` pointer) | Yes, KV field `kv-field` |
+| LDAP bind / SMTP / IdP client secret (value) | Never (operator sets `${vault.key}`) | Yes (operator-managed) |
+| Vault token / AppRole secret-id / Kubernetes JWT | Static token or AppRole values only if configured via SPI properties (Keycloak's own config store, e.g. `keycloak.conf` or env) | N/A — these authenticate *to* Vault, they are not secrets Vault stores for this SPI |
+| Cached secret value | In-process Infinispan `LOCAL` cache only, bounded TTL, never persisted to disk | N/A |
+
+**Least privilege.** Scope the Vault policy to the minimum paths this SPI needs — see
+[Policy (least privilege, read and write for client secrets)](#3-policy-least-privilege-read-and-write-for-client-secrets).
+Prefer a realm-scoped policy over a mount-wide wildcard; prefer `managed-secret-prefix` so
+this SPI's write/delete capability is scoped to a sub-path it exclusively owns (see
+[Managed vs externally managed secrets](#managed-vs-externally-managed-secrets)).
+
+**Realm isolation.** Every cache key and, with `key-resolvers=REALM_FILESEPARATOR_KEY`,
+every Vault path includes the realm name, so one realm's Vault token or cache entry cannot
+satisfy another realm's lookup (`HashicorpVaultCacheKeyTest`, `VaultPathResolverTest`).
+Realm isolation at the Vault-policy level (a distinct AppRole/token per realm) is an
+operator responsibility this SPI supports but does not enforce — a single shared credential
+used across realms can read/write every realm's secrets unless Vault policy scopes it.
+
+**TLS.** Always deploy with `https://` to Vault in production; set the Keycloak truststore
+that trusts Vault's server certificate. For `auth-method=cert`, the client certificate lives
+in Keycloak's own outbound HTTP client keystore (`--spi-connections-http-client--default--client-keystore`),
+never in this SPI's configuration, so it benefits from Keycloak's existing keystore rotation
+and protection.
+
+**Kubernetes authentication.** The service-account JWT is read from disk fresh for every
+login attempt, never cached in memory beyond that single call, never logged, and never
+included in an exception message (`KubernetesTokenProvider`).
+
+**Secret handling in memory.** Secret values pass through as `String`s returned by Jackson
+and Keycloak's own `VaultRawSecret`/`DefaultVaultRawSecret` types; this SPI does not add its
+own additional in-memory copies, temp files, or disk-backed caches beyond the bounded
+Infinispan entry.
+
+**Logging restrictions.** See [Observability](#observability) below for the explicit list of
+what must never appear in a log line.
+
+**Secret rotation.** See [Cache, consistency, and rotation](#cache-consistency-and-rotation).
+Rotation always writes a **new** Vault value before Keycloak's UI shows the client secret
+again; a failed Vault write leaves the previously generated secret in Keycloak rather than
+silently losing it.
+
+## Observability
+
+**Available logs** (all via `org.jboss.logging.Logger`, so they follow Keycloak's own log
+level/handler configuration):
+
+| Logger | Emits |
+|---|---|
+| `HashicorpVaultProviderFactory` | Provider init summary (auth method, URL, namespace, KV mount/version, timeouts, retry budget, health-check state) — no secret values |
+| `HashicorpVaultClient` | Per-request retry/backoff attempts, final failure classification (`VaultErrorMapper` reason), health-check poll results |
+| `VaultSecretService` | Re-authentication after a 403, with outcome (refreshed vs. still unusable) |
+| `auth/*TokenProvider` | Login attempts, missing-config warnings (e.g. missing `kubernetes-role`), JWT-file read failures (path only, never JWT content) |
+| `events/ClientSecretVaultSync`, `events/HashicorpVaultAdminEventListener` | Write-back attempts, cache invalidation on rotate/delete |
+| `VaultHealthChecker` | Background health-check transitions (healthy ↔ unhealthy) |
+
+**Safe diagnostic information** — realm name, Vault path (mount/realm/key segments only,
+never combined with the secret value), HTTP status code, operation name (`read-secret`,
+`write-secret`, `delete-secret`, `authenticate`), exception class name, attempt number,
+duration in milliseconds.
+
+**Error categories** (see `exception/*` and `VaultErrorMapper`): `VaultConfigurationException`
+(400 / bad config, never retried), `VaultAuthenticationException` (401 or failed login),
+`VaultAuthorizationException` (403), `VaultSecretNotFoundException` (404), `VaultRateLimitException`
+(429, retried), `VaultServerException` (5xx, retried), `VaultConnectionException` /
+`VaultTimeoutException` (transport-level, retried per `VaultRetryPolicy`).
+
+**Vault health.** Optional background poll of `GET /v1/sys/health` (`health-check-enabled=true`),
+logged at INFO on success and WARN on failure/unhealthy status; never on the secret-lookup
+hot path.
+
+**Retry events.** Every retry attempt is logged at WARN with the operation, path, status or
+transport-error class, attempt number out of the configured maximum, and duration —
+sufficient to build an alert on sustained retry storms without exposing secret data.
+
+**Authentication failures.** Failed logins are logged with the auth method and Vault's HTTP
+status, never with the token, AppRole secret-id, JWT, or client certificate/key material.
+
+**Must NEVER appear in logs** (verified by code review of every log call site in this
+codebase): Vault tokens (`X-Vault-Token` value), AppRole `secret_id`, Kubernetes service
+account JWTs, TLS client private keys, resolved secret **values** (only the Vault *path* is
+logged, per `HashicorpVaultClient.safePath`), and full Vault HTTP response bodies (only the
+parsed status/field-presence outcome is logged, never the raw body).
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Boot log: `Vault token is not configured` | `auth-method=token` with no `token` set | Set `--spi-vault--hashicorp--token` |
+| Boot fails: `Vault url '...' must use the http or https scheme` / `must include a host` | Malformed `url` (typo, missing scheme, missing host) | Correct the `url` property; only `http://`/`https://` with a host are accepted |
+| Boot fails: `auth-method=approle requires both approle-role-id and approle-secret-id to be set` | AppRole selected without both credentials | Set both `approle-role-id` and `approle-secret-id` |
+| Boot fails: `auth-method=kubernetes requires kubernetes-role to be set` | Kubernetes auth selected without a role | Set `kubernetes-role` |
+| Token request returns `unauthorized_client` / `invalid_client_credentials` | Presented secret does not match the Vault value, or the pointer did not resolve | Confirm the Vault KV field equals what you POST as `client_secret`; confirm `key-resolvers` matches how the secret was written |
+| `Vault secret lookup failed: authorization denied` (403) in logs | Vault policy does not grant `read` on the resolved path | Check the policy against the *resolved* path (`kv-mount/data/{resolvedKey}` for KV v2), not the `${vault.key}` expression |
+| Regenerate secret does not update Vault | Vault write failed (check for a preceding WARN); Keycloak keeps the previously generated secret in that case | Check Vault write policy/connectivity, then regenerate again |
+| Stale secret value served after rotation on some Keycloak nodes | Expected `LOCAL` cache behavior — other nodes have not expired/invalidated yet | Lower `cache-ttl` for faster convergence, or disable caching where immediate visibility is required |
+| Requests hang / time out slowly | `connect-timeout-ms` / `read-timeout-ms` too high for the environment | Lower the timeouts; confirm network path to Vault |
+| Frequent `VaultServerException` retries in logs | Vault under load or partially unavailable | Check Vault's own health/logs; consider `retry-max-attempts` / backoff tuning |
+| JAR loads but nothing happens | Missing `--spi-vault--provider=hashicorp`, or `--vault=file`/`--vault=keystore` set instead | Set `--spi-vault--provider=hashicorp` and remove any `--vault=...` flag |
+| `NoClassDefFoundError` for `org.keycloak.http.simple.SimpleHttp` | JAR deployed on Keycloak 26.0.x (package does not exist there) | Deploy on Keycloak 26.4.x+; see [Keycloak compatibility risks](KEYCLOAK_COMPATIBILITY.md) |
+
+## Testing and CI
+
+* `mvn test` — unit tests only (100+ tests, no Docker required); this is what CI runs on
+  every push/PR as a fast gate.
+* `mvn verify` — unit tests **and** the Testcontainers integration suite
+  (`VaultContainerIT`) against a real `hashicorp/vault` dev-mode container: KV v1/v2,
+  token/AppRole login, secret rotation, retry-through-outage, and connect-timeout behavior.
+  Requires Docker; the suite skips itself automatically when Docker is unavailable so it
+  never breaks a Docker-less environment.
+* See [.github/workflows/ci.yml](.github/workflows/ci.yml) for the CI pipeline (compile →
+  unit test → package as one job, integration test as a second job) and
+  [INTEGRATION_TEST_MATRIX.md](INTEGRATION_TEST_MATRIX.md) for exactly which scenario is
+  covered where and why.
 
 ## License
 

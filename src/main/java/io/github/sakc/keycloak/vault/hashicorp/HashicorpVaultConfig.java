@@ -15,9 +15,12 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp;
 
+import io.github.sakc.keycloak.vault.hashicorp.exception.VaultConfigurationException;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Locale;
 import java.util.Set;
 
@@ -105,6 +108,7 @@ public final class HashicorpVaultConfig {
 
     public static HashicorpVaultConfig from(Config.Scope config) {
         String url = trimTrailingSlash(config.get("url", DEFAULT_URL));
+        validateUrl(url);
         String authMethod = normalizeAuthMethod(config.get("auth-method", AUTH_TOKEN));
         String namespace = blankToNull(config.get("namespace"));
         String kvMount = stripSlashes(config.get("kv-mount", DEFAULT_KV_MOUNT));
@@ -157,7 +161,32 @@ public final class HashicorpVaultConfig {
                 connectTimeoutMs, readTimeoutMs, requestTimeoutMs, retryMaxAttempts,
                 retryInitialDelayMs, retryMaxDelayMs, healthCheckEnabled, healthCheckIntervalMs);
     }
+/**
+     * Rejects a malformed Vault URL at startup instead of letting every subsequent request fail
+     * with an opaque connection error. Must be an absolute {@code http}/{@code https} URL with a
+     * host; Vault does not serve KV traffic over any other scheme.
+     */
+    private static void validateUrl(String url) {
+        if (url == null || url.isBlank()) {
+            throw new VaultConfigurationException("Vault url must not be blank.");
+        }
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException e) {
+            throw new VaultConfigurationException("Vault url '" + url + "' is not a valid URI: " + e.getMessage());
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+            throw new VaultConfigurationException(
+                    "Vault url '" + url + "' must use the http or https scheme.");
+        }
+        if (uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new VaultConfigurationException("Vault url '" + url + "' must include a host.");
+        }
+    }
 
+    
     private static Integer optionalPositiveInt(int value, String propertyName) {
         if (value == 0) {
             return null;
