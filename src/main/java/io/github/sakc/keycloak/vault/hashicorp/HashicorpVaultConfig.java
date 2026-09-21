@@ -35,6 +35,17 @@ public final class HashicorpVaultConfig {
     public static final int DEFAULT_KV_VERSION = 2;
     public static final long DEFAULT_CACHE_TTL_MS = 300_000L;
 
+    public static final long DEFAULT_CONNECT_TIMEOUT_MS = 2_000L;
+    public static final long DEFAULT_READ_TIMEOUT_MS = 5_000L;
+    public static final long DEFAULT_REQUEST_TIMEOUT_MS = 5_000L;
+
+    public static final int DEFAULT_RETRY_MAX_ATTEMPTS = 4;
+    public static final long DEFAULT_RETRY_INITIAL_DELAY_MS = 100L;
+    public static final long DEFAULT_RETRY_MAX_DELAY_MS = 1_000L;
+
+    public static final boolean DEFAULT_HEALTH_CHECK_ENABLED = false;
+    public static final long DEFAULT_HEALTH_CHECK_INTERVAL_MS = 30_000L;
+
     public static final String AUTH_TOKEN = "token";
     public static final String AUTH_APPROLE = "approle";
     public static final String AUTH_CERT = "cert";
@@ -52,9 +63,20 @@ public final class HashicorpVaultConfig {
     private final String kvField;
     private final long cacheTtlMs;
     private final String managedSecretPrefix;
+    private final long connectTimeoutMs;
+    private final long readTimeoutMs;
+    private final long requestTimeoutMs;
+    private final int retryMaxAttempts;
+    private final long retryInitialDelayMs;
+    private final long retryMaxDelayMs;
+    private final boolean healthCheckEnabled;
+    private final long healthCheckIntervalMs;
 
     private HashicorpVaultConfig(String url, String authMethod, String namespace, String kvMount, int kvVersion,
-                                  String kvField, long cacheTtlMs, String managedSecretPrefix) {
+                                  String kvField, long cacheTtlMs, String managedSecretPrefix,
+                                  long connectTimeoutMs, long readTimeoutMs, long requestTimeoutMs,
+                                  int retryMaxAttempts, long retryInitialDelayMs, long retryMaxDelayMs,
+                                  boolean healthCheckEnabled, long healthCheckIntervalMs) {
         this.url = url;
         this.authMethod = authMethod;
         this.namespace = namespace;
@@ -63,6 +85,14 @@ public final class HashicorpVaultConfig {
         this.kvField = kvField;
         this.cacheTtlMs = cacheTtlMs;
         this.managedSecretPrefix = managedSecretPrefix;
+        this.connectTimeoutMs = connectTimeoutMs;
+        this.readTimeoutMs = readTimeoutMs;
+        this.requestTimeoutMs = requestTimeoutMs;
+        this.retryMaxAttempts = retryMaxAttempts;
+        this.retryInitialDelayMs = retryInitialDelayMs;
+        this.retryMaxDelayMs = retryMaxDelayMs;
+        this.healthCheckEnabled = healthCheckEnabled;
+        this.healthCheckIntervalMs = healthCheckIntervalMs;
     }
 
     public static HashicorpVaultConfig from(Config.Scope config) {
@@ -78,8 +108,38 @@ public final class HashicorpVaultConfig {
         String kvField = config.get("kv-field", DEFAULT_KV_FIELD);
         long cacheTtlMs = config.getLong("cache-ttl", DEFAULT_CACHE_TTL_MS);
         String managedSecretPrefix = blankToNull(config.get("managed-secret-prefix"));
+
+        long connectTimeoutMs = positiveOrDefault(config.getLong("connect-timeout-ms", DEFAULT_CONNECT_TIMEOUT_MS),
+                DEFAULT_CONNECT_TIMEOUT_MS, "connect-timeout-ms");
+        long readTimeoutMs = positiveOrDefault(config.getLong("read-timeout-ms", DEFAULT_READ_TIMEOUT_MS),
+                DEFAULT_READ_TIMEOUT_MS, "read-timeout-ms");
+        long requestTimeoutMs = positiveOrDefault(config.getLong("request-timeout-ms", DEFAULT_REQUEST_TIMEOUT_MS),
+                DEFAULT_REQUEST_TIMEOUT_MS, "request-timeout-ms");
+
+        int retryMaxAttempts = config.getInt("retry-max-attempts", DEFAULT_RETRY_MAX_ATTEMPTS);
+        if (retryMaxAttempts < 1) {
+            log.warnf("retry-max-attempts must be >= 1; using %d.", DEFAULT_RETRY_MAX_ATTEMPTS);
+            retryMaxAttempts = DEFAULT_RETRY_MAX_ATTEMPTS;
+        }
+        long retryInitialDelayMs = positiveOrDefault(config.getLong("retry-initial-delay-ms", DEFAULT_RETRY_INITIAL_DELAY_MS),
+                DEFAULT_RETRY_INITIAL_DELAY_MS, "retry-initial-delay-ms");
+        long retryMaxDelayMs = positiveOrDefault(config.getLong("retry-max-delay-ms", DEFAULT_RETRY_MAX_DELAY_MS),
+                DEFAULT_RETRY_MAX_DELAY_MS, "retry-max-delay-ms");
+        boolean healthCheckEnabled = config.getBoolean("health-check-enabled", DEFAULT_HEALTH_CHECK_ENABLED);
+        long healthCheckIntervalMs = positiveOrDefault(config.getLong("health-check-interval-ms", DEFAULT_HEALTH_CHECK_INTERVAL_MS),
+                DEFAULT_HEALTH_CHECK_INTERVAL_MS, "health-check-interval-ms");
+
         return new HashicorpVaultConfig(url, authMethod, namespace, kvMount, kvVersion, kvField, cacheTtlMs,
-                managedSecretPrefix);
+                managedSecretPrefix, connectTimeoutMs, readTimeoutMs, requestTimeoutMs, retryMaxAttempts,
+                retryInitialDelayMs, retryMaxDelayMs, healthCheckEnabled, healthCheckIntervalMs);
+    }
+
+    private static long positiveOrDefault(long value, long defaultValue, String propertyName) {
+        if (value <= 0) {
+            log.warnf("%s must be > 0; using %d.", propertyName, defaultValue);
+            return defaultValue;
+        }
+        return value;
     }
 
     public String getUrl() {
@@ -121,6 +181,38 @@ public final class HashicorpVaultConfig {
      */
     public String getManagedSecretPrefix() {
         return managedSecretPrefix;
+    }
+
+    public long getConnectTimeoutMs() {
+        return connectTimeoutMs;
+    }
+
+    public long getReadTimeoutMs() {
+        return readTimeoutMs;
+    }
+
+    public long getRequestTimeoutMs() {
+        return requestTimeoutMs;
+    }
+
+    public int getRetryMaxAttempts() {
+        return retryMaxAttempts;
+    }
+
+    public long getRetryInitialDelayMs() {
+        return retryInitialDelayMs;
+    }
+
+    public long getRetryMaxDelayMs() {
+        return retryMaxDelayMs;
+    }
+
+    public boolean isHealthCheckEnabled() {
+        return healthCheckEnabled;
+    }
+
+    public long getHealthCheckIntervalMs() {
+        return healthCheckIntervalMs;
     }
 
     static String normalizeAuthMethod(String authMethod) {

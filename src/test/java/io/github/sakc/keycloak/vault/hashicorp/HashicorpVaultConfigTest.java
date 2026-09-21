@@ -99,4 +99,49 @@ class HashicorpVaultConfigTest {
         )));
         assertNull(blank.getManagedSecretPrefix());
     }
+
+    @Test
+    void reliabilitySettingsDefaultToBoundedSensibleValues() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of()));
+        assertEquals(2_000L, config.getConnectTimeoutMs());
+        assertEquals(5_000L, config.getReadTimeoutMs());
+        assertEquals(5_000L, config.getRequestTimeoutMs());
+        assertEquals(4, config.getRetryMaxAttempts());
+        assertEquals(100L, config.getRetryInitialDelayMs());
+        assertEquals(1_000L, config.getRetryMaxDelayMs());
+        assertFalse(config.isHealthCheckEnabled());
+        assertEquals(30_000L, config.getHealthCheckIntervalMs());
+    }
+
+    @Test
+    void reliabilitySettingsAreConfigurable() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "connect-timeout-ms", "1000",
+                "read-timeout-ms", "3000",
+                "request-timeout-ms", "2500",
+                "retry-max-attempts", "6",
+                "retry-initial-delay-ms", "50",
+                "retry-max-delay-ms", "2000",
+                "health-check-enabled", "true",
+                "health-check-interval-ms", "15000"
+        )));
+        assertEquals(1000L, config.getConnectTimeoutMs());
+        assertEquals(3000L, config.getReadTimeoutMs());
+        assertEquals(2500L, config.getRequestTimeoutMs());
+        assertEquals(6, config.getRetryMaxAttempts());
+        assertEquals(50L, config.getRetryInitialDelayMs());
+        assertEquals(2000L, config.getRetryMaxDelayMs());
+        assertTrue(config.isHealthCheckEnabled());
+        assertEquals(15000L, config.getHealthCheckIntervalMs());
+    }
+
+    @Test
+    void invalidReliabilitySettingsFallBackToDefaults() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "connect-timeout-ms", "0",
+                "retry-max-attempts", "0"
+        )));
+        assertEquals(2_000L, config.getConnectTimeoutMs());
+        assertEquals(4, config.getRetryMaxAttempts());
+    }
 }

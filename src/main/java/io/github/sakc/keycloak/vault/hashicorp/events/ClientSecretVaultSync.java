@@ -20,7 +20,7 @@ import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultConfig;
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultExpressions;
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProvider;
 import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultProviderFactory;
-import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
+import io.github.sakc.keycloak.vault.hashicorp.VaultSecretService;
 import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
 import org.infinispan.Cache;
 import org.jboss.logging.Logger;
@@ -114,9 +114,8 @@ public final class ClientSecretVaultSync {
             return;
         }
         HashicorpVaultConfig config = factory.vaultConfig();
-        HashicorpVaultClient http = factory.vaultHttp();
-        VaultTokenProvider tokenProvider = factory.tokenProvider();
-        if (config == null || http == null || tokenProvider == null) {
+        VaultSecretService secretService = factory.vaultSecretService();
+        if (config == null || secretService == null) {
             return;
         }
         RealmModel realm = client.getRealm();
@@ -131,20 +130,8 @@ public final class ClientSecretVaultSync {
 
         session.setAttribute(SYNCING, Boolean.TRUE);
         try {
-            String token = tokenProvider.getToken(session);
-            if (token == null) {
-                log.warn("Vault token provider returned null; cannot write client secret.");
-                return;
-            }
             String secret = client.getSecret();
-            HashicorpVaultClient.WriteResult result = http.writeSecret(session, token, vaultKey, secret);
-            if (result.isForbidden()) {
-                tokenProvider.invalidate();
-                String refreshed = tokenProvider.getToken(session);
-                if (refreshed != null) {
-                    result = http.writeSecret(session, refreshed, vaultKey, secret);
-                }
-            }
+            HashicorpVaultClient.WriteResult result = secretService.writeSecret(session, vaultKey, secret);
             if (!result.success()) {
                 return;
             }
@@ -173,10 +160,9 @@ public final class ClientSecretVaultSync {
         }
 
         HashicorpVaultConfig config = factory.vaultConfig();
-        HashicorpVaultClient http = factory.vaultHttp();
-        VaultTokenProvider tokenProvider = factory.tokenProvider();
+        VaultSecretService secretService = factory.vaultSecretService();
         RealmModel realm = client.getRealm();
-        if (config == null || http == null || tokenProvider == null || realm == null) {
+        if (config == null || secretService == null || realm == null) {
             return;
         }
 
@@ -186,19 +172,7 @@ public final class ClientSecretVaultSync {
             return;
         }
 
-        String token = tokenProvider.getToken(session);
-        if (token == null) {
-            log.warn("Vault token provider returned null; cannot delete client secret.");
-            return;
-        }
-        HashicorpVaultClient.DeleteResult result = http.deleteSecret(session, token, vaultKey);
-        if (result.isForbidden()) {
-            tokenProvider.invalidate();
-            String refreshed = tokenProvider.getToken(session);
-            if (refreshed != null) {
-                result = http.deleteSecret(session, refreshed, vaultKey);
-            }
-        }
+        HashicorpVaultClient.DeleteResult result = secretService.deleteSecret(session, vaultKey);
         if (result.success()) {
             cacheRemove(session, config, vaultKey);
             log.infof("Deleted client secret from HashiCorp Vault at key %s", vaultKey);

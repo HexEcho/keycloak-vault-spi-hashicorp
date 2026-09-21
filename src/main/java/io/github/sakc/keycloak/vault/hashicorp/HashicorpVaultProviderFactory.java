@@ -43,6 +43,8 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
     private HashicorpVaultConfig vaultConfig;
     private HashicorpVaultClient client;
     private VaultTokenProvider tokenProvider;
+    private VaultSecretService secretService;
+    private VaultHealthChecker healthChecker;
 
     @Override
     public VaultProvider create(KeycloakSession session) {
@@ -50,8 +52,7 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
             log.debug("HashiCorp vault provider is not initialized");
             return null;
         }
-        return new HashicorpVaultProvider(getRealmName(session), keyResolvers, session, vaultConfig, client,
-                tokenProvider);
+        return new HashicorpVaultProvider(getRealmName(session), keyResolvers, session, vaultConfig, secretService);
     }
 
     @Override
@@ -60,22 +61,34 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
         this.vaultConfig = HashicorpVaultConfig.from(config);
         this.client = new HashicorpVaultClient(vaultConfig);
         this.tokenProvider = createTokenProvider(config, vaultConfig, client);
-        log.infof("HashiCorp vault provider initialized. authMethod=%s url=%s namespace=%s kvMount=%s kvVersion=%d",
+        this.secretService = new VaultSecretService(client, tokenProvider);
+        log.infof("HashiCorp vault provider initialized. authMethod=%s url=%s namespace=%s kvMount=%s kvVersion=%d "
+                        + "connectTimeoutMs=%d readTimeoutMs=%d retryMaxAttempts=%d healthCheckEnabled=%s",
                 vaultConfig.getAuthMethod(), vaultConfig.getUrl(),
                 vaultConfig.getNamespace() == null ? "-" : vaultConfig.getNamespace(),
-                vaultConfig.getKvMount(), vaultConfig.getKvVersion());
+                vaultConfig.getKvMount(), vaultConfig.getKvVersion(),
+                vaultConfig.getConnectTimeoutMs(), vaultConfig.getReadTimeoutMs(), vaultConfig.getRetryMaxAttempts(),
+                vaultConfig.isHealthCheckEnabled());
     }
 
     @Override
     public void postInit(KeycloakSessionFactory factory) {
+        if (vaultConfig != null && vaultConfig.isHealthCheckEnabled() && client != null) {
+            healthChecker = VaultHealthChecker.start(factory, client, vaultConfig);
+        }
     }
 
     @Override
     public void close() {
+        if (healthChecker != null) {
+            healthChecker.close();
+            healthChecker = null;
+        }
         if (tokenProvider != null) {
             tokenProvider.close();
             tokenProvider = null;
         }
+        secretService = null;
         client = null;
         vaultConfig = null;
     }
@@ -90,6 +103,10 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
 
     public VaultTokenProvider tokenProvider() {
         return tokenProvider;
+    }
+
+    public VaultSecretService vaultSecretService() {
+        return secretService;
     }
 
     public String resolveKey(String realm, String key) {
@@ -237,6 +254,63 @@ public class HashicorpVaultProviderFactory extends AbstractVaultProviderFactory 
                 .helpText("Infinispan entry lifespan in milliseconds. Use 0 or negative to disable caching.")
                 .type(ProviderConfigProperty.STRING_TYPE)
                 .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_CACHE_TTL_MS))
+                .add()
+                .property()
+                .name("connect-timeout-ms")
+                .label("Connect timeout (ms)")
+                .helpText("Maximum time to establish a TCP connection to Vault before failing fast.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_CONNECT_TIMEOUT_MS))
+                .add()
+                .property()
+                .name("read-timeout-ms")
+                .label("Read timeout (ms)")
+                .helpText("Maximum time to wait for data on an established connection to Vault.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_READ_TIMEOUT_MS))
+                .add()
+                .property()
+                .name("request-timeout-ms")
+                .label("Request timeout (ms)")
+                .helpText("Maximum time to wait for a connection to become available from the pool.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_REQUEST_TIMEOUT_MS))
+                .add()
+                .property()
+                .name("retry-max-attempts")
+                .label("Retry max attempts")
+                .helpText("Maximum number of attempts (including the first) for a Vault request. 429/500/502/503/504 "
+                        + "and connection failures are retried; 400/401/403/404 are never retried.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_RETRY_MAX_ATTEMPTS))
+                .add()
+                .property()
+                .name("retry-initial-delay-ms")
+                .label("Retry initial delay (ms)")
+                .helpText("Backoff delay before the second attempt. Doubles on each subsequent attempt up to retry-max-delay-ms, with +/-20% jitter.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_RETRY_INITIAL_DELAY_MS))
+                .add()
+                .property()
+                .name("retry-max-delay-ms")
+                .label("Retry max delay (ms)")
+                .helpText("Upper bound on the exponential backoff delay between retries.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_RETRY_MAX_DELAY_MS))
+                .add()
+                .property()
+                .name("health-check-enabled")
+                .label("Health check enabled")
+                .helpText("Poll GET /v1/sys/health on a background thread for operational diagnostics. Never runs on the secret-lookup path.")
+                .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_HEALTH_CHECK_ENABLED))
+                .add()
+                .property()
+                .name("health-check-interval-ms")
+                .label("Health check interval (ms)")
+                .helpText("Delay between background Vault health checks. Only used when health-check-enabled=true.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(String.valueOf(HashicorpVaultConfig.DEFAULT_HEALTH_CHECK_INTERVAL_MS))
                 .add()
                 .property()
                 .name(KEY_RESOLVERS)

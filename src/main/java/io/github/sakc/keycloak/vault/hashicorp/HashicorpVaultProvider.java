@@ -15,7 +15,6 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp;
 
-import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
 import org.infinispan.Cache;
 import org.jboss.logging.Logger;
@@ -41,17 +40,14 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
 
     private final KeycloakSession session;
     private final HashicorpVaultConfig config;
-    private final HashicorpVaultClient client;
-    private final VaultTokenProvider tokenProvider;
+    private final VaultSecretService secretService;
 
     public HashicorpVaultProvider(String realm, List<VaultKeyResolver> resolvers, KeycloakSession session,
-                                   HashicorpVaultConfig config, HashicorpVaultClient client,
-                                   VaultTokenProvider tokenProvider) {
+                                   HashicorpVaultConfig config, VaultSecretService secretService) {
         super(realm, resolvers);
         this.session = session;
         this.config = config;
-        this.client = client;
-        this.tokenProvider = tokenProvider;
+        this.secretService = secretService;
     }
 
     @Override
@@ -75,20 +71,7 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
             }
         }
 
-        String token = tokenProvider.getToken(session);
-        if (token == null) {
-            log.warn("Vault token provider returned null; cannot fetch secret.");
-            return EMPTY;
-        }
-
-        HashicorpVaultClient.SecretLookup lookup = client.readSecret(session, token, vaultKey);
-        if (lookup.isForbidden()) {
-            tokenProvider.invalidate();
-            String refreshed = tokenProvider.getToken(session);
-            if (refreshed != null) {
-                lookup = client.readSecret(session, refreshed, vaultKey);
-            }
-        }
+        HashicorpVaultClient.SecretLookup lookup = secretService.readSecret(session, vaultKey);
         if (!lookup.found()) {
             return EMPTY;
         }
