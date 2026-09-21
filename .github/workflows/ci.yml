@@ -21,13 +21,18 @@ jobs:
         run: mvn -B -ntp compile
       - name: Unit tests
         run: mvn -B -ntp test
+      - name: Generate SBOM
+        run: mvn -B -ntp org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
       - name: Package
         run: mvn -B -ntp package -DskipTests
       - name: Upload jar
         uses: actions/upload-artifact@v4
         with:
           name: keycloak-vault-integration-hashicorp
-          path: target/*.jar
+          path: |
+            target/*.jar
+            target/bom.xml
+            target/*.spdx.json
 
   integration-test:
     name: Integration tests (Testcontainers + real Vault)
@@ -44,3 +49,35 @@ jobs:
         # Docker is preinstalled on GitHub-hosted ubuntu-latest runners; VaultContainerIT
         # pulls hashicorp/vault and testcontainers/ryuk from Docker Hub. This job never
         # talks to a production Vault, only ephemeral dev-mode containers it starts itself.
+
+  security-scan:
+    name: Security & supply-chain scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Dependency vulnerability scan
+        run: mvn -B -ntp org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 -DskipProvidedScope=true
+      - name: Secret scan
+        run: docker run --rm -v "$PWD:/src" ghcr.io/gitleaks/gitleaks:latest detect --source="/src" --no-banner --redact --exit-code 1
+      - name: Trivy filesystem scan
+        run: docker run --rm -v "$PWD:/src" aquasec/trivy:latest fs --security-checks vuln,config --severity HIGH,CRITICAL --exit-code 1 /src
+
+  license-and-packaging:
+    name: License and package validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Package and validate jar
+        run: mvn -B -ntp package -DskipTests
+      - name: Validate JAR is not empty
+        run: test -s target/*.jar

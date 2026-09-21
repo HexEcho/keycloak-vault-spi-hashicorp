@@ -2,21 +2,33 @@
 
 *Disclaimer: This project is not affiliated with, endorsed by, or supported by Red Hat, Inc., the Keycloak project, or HashiCorp, Inc.*
 
-This JAR is a Keycloak **Vault SPI** provider (`id=hashicorp`) for **Keycloak / Red Hat build of Keycloak 26.4.x**. Keycloak stores `${vault.key}` pointers. Secret values live in HashiCorp Vault KV.
+This JAR is a Keycloak **Vault SPI** provider (`id=hashicorp`) for **Keycloak / Red Hat build of Keycloak 26.7.3**. Keycloak stores `${vault.key}` pointers; secret material remains in HashiCorp Vault KV.
 
 It also:
 
-* Resolves those pointers for **confidential client secrets** at token time (Keycloak 26.4 does not do this by itself; 26.6 does).
+* Resolves those pointers for **confidential client secrets** at token time using the vault-aware client authenticator.
 * Writes a generated confidential-client secret to Vault on **client create** and **Regenerate secret**, then stores `${vault.{clientId}}` in Keycloak.
 
 Do **not** set `--vault=file` or `--vault=keystore`. Select this provider with `--spi-vault--provider=hashicorp`.
 
-**Runtime target:** Keycloak **26.4.10** (RHBK **26.4.12** is the tested distribution). Compile uses Maven Central **26.4.7** (last community 26.4.x); the Vault SPI matches 26.4.10.
+## Supported version policy
+
+| Scope | Version | Status |
+|---|---|---|
+| Compile-time dependency | Keycloak 26.7.3 | Authoritative Maven build target |
+| Tested runtime | Keycloak 26.7.3 | Verified by the repository test suite and integration tests |
+| Official support | Keycloak 26.7.3 | Supported baseline for this project |
+| Historical compatibility note | 26.4.x | Legacy/compatibility-bridge only; not the supported baseline |
+
+This project intentionally declares one supported baseline: Keycloak 26.7.3. Do not claim compatibility with a different Keycloak release unless it is explicitly re-tested in CI or a targeted runtime validation. The compatibility-sensitive dependencies remain documented in [KEYCLOAK_COMPATIBILITY.md](KEYCLOAK_COMPATIBILITY.md).
 
 **Further reading:** [Keycloak version compatibility risks](KEYCLOAK_COMPATIBILITY.md) ·
-[OpenBao compatibility assessment](OPENBAO_ASSESSMENT.md) ·
+[Installation guide](INSTALLATION.md) ·
+[Configuration reference](CONFIGURATION.md) ·
+[Security guidance](SECURITY.md) ·
+[Operations guide](OPERATIONS.md) ·
 [Integration test matrix](INTEGRATION_TEST_MATRIX.md) ·
-[Migration / upgrade notes from the original clone](DIFFERENCE.md)
+[Upgrade notes](UPGRADING.md)
 
 ---
 

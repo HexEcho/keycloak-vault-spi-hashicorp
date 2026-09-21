@@ -1,9 +1,17 @@
 # Keycloak Version Compatibility Risks
 
-Target: Keycloak / RHBK **26.4.x** (compiled against Maven Central **26.7.3**, see
-[pom.xml](pom.xml)). This document lists every Keycloak API this SPI depends on that is
-**internal, private, unstable, or otherwise not part of the public/stable extension SPI**,
-so future Keycloak upgrades can be scoped accurately instead of discovered by a broken build.
+Supported baseline: Keycloak / RHBK **26.7.3** (see [pom.xml](pom.xml)). This document lists every Keycloak API this SPI depends on that is **internal, private, unstable, or otherwise not part of the public/stable extension SPI**, so future Keycloak upgrades can be scoped accurately instead of discovered by a broken build.
+
+## Compatibility model
+
+| Category | Value |
+|---|---|
+| Compile-time dependency | 26.7.3 |
+| Tested runtime | 26.7.3 |
+| Officially supported version | 26.7.3 |
+| Legacy compatibility note | 26.4.x compatibility code paths are retained only as a bridge; they are not the supported baseline |
+
+The project does not claim runtime support for a Keycloak version unless it is actually validated in the repository’s tests or in a documented runtime verification run. This is especially important for private APIs such as `SimpleHttp`, `InfinispanConnectionProvider`, and the built-in client-authenticator classes documented below.
 
 Stability classes used below follow Keycloak's own convention:
 
