@@ -15,8 +15,8 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp;
 
-import io.github.sakc.keycloak.vault.hashicorp.auth.VaultTokenProvider;
 import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCaches;
+import io.github.sakc.keycloak.vault.hashicorp.cache.HashicorpVaultCacheKey;
 import org.infinispan.Cache;
 import org.jboss.logging.Logger;
 import org.keycloak.models.KeycloakSession;
@@ -29,6 +29,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -38,20 +40,21 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
 
     private static final Logger log = Logger.getLogger(HashicorpVaultProvider.class);
     private static final VaultRawSecret EMPTY = DefaultVaultRawSecret.forBuffer(Optional.empty());
+        private static final ConcurrentHashMap<String, CompletableFuture<HashicorpVaultClient.SecretLookup>> IN_FLIGHT_READS =
+            new ConcurrentHashMap<>();
 
+        private final String realm;
     private final KeycloakSession session;
     private final HashicorpVaultConfig config;
-    private final HashicorpVaultClient client;
-    private final VaultTokenProvider tokenProvider;
+    private final VaultSecretService secretService;
 
     public HashicorpVaultProvider(String realm, List<VaultKeyResolver> resolvers, KeycloakSession session,
-                                   HashicorpVaultConfig config, HashicorpVaultClient client,
-                                   VaultTokenProvider tokenProvider) {
+                                   HashicorpVaultConfig config, VaultSecretService secretService) {
         super(realm, resolvers);
+        this.realm = realm;
         this.session = session;
         this.config = config;
-        this.client = client;
-        this.tokenProvider = tokenProvider;
+        this.secretService = secretService;
     }
 
     @Override
@@ -68,32 +71,20 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
 
     @Override
     protected VaultRawSecret obtainSecretInternal(String vaultKey) {
+        String cacheKey = cacheKey(vaultKey);
         if (config.cacheEnabled()) {
-            String cached = cacheGet(vaultKey);
+            String cached = cacheGet(cacheKey);
             if (cached != null) {
                 return wrap(cached);
             }
         }
 
-        String token = tokenProvider.getToken(session);
-        if (token == null) {
-            log.warn("Vault token provider returned null; cannot fetch secret.");
-            return EMPTY;
-        }
-
-        HashicorpVaultClient.SecretLookup lookup = client.readSecret(session, token, vaultKey);
-        if (lookup.isForbidden()) {
-            tokenProvider.invalidate();
-            String refreshed = tokenProvider.getToken(session);
-            if (refreshed != null) {
-                lookup = client.readSecret(session, refreshed, vaultKey);
-            }
-        }
+        HashicorpVaultClient.SecretLookup lookup = readSingleFlight(cacheKey, vaultKey);
         if (!lookup.found()) {
             return EMPTY;
         }
         if (config.cacheEnabled()) {
-            cachePut(vaultKey, lookup.value());
+            cachePut(cacheKey, lookup.value());
         }
         return wrap(lookup.value());
     }
@@ -103,25 +94,45 @@ public class HashicorpVaultProvider extends AbstractVaultProvider {
     }
 
     public static boolean isSafeResolvedKey(String resolvedKey) {
-        return resolvedKey != null && !resolvedKey.isEmpty()
-                && !resolvedKey.contains("..")
-                && resolvedKey.indexOf('\0') < 0;
+        return VaultPathResolver.isSafeResolvedKey(resolvedKey);
     }
 
-    private String cacheGet(String vaultKey) {
+    private HashicorpVaultClient.SecretLookup readSingleFlight(String cacheKey, String vaultKey) {
+        CompletableFuture<HashicorpVaultClient.SecretLookup> leader = new CompletableFuture<>();
+        CompletableFuture<HashicorpVaultClient.SecretLookup> existing = IN_FLIGHT_READS.putIfAbsent(cacheKey, leader);
+        if (existing == null) {
+            try {
+                HashicorpVaultClient.SecretLookup lookup = secretService.readSecret(session, vaultKey);
+                leader.complete(lookup);
+                return lookup;
+            } catch (RuntimeException e) {
+                leader.completeExceptionally(e);
+                throw e;
+            } finally {
+                IN_FLIGHT_READS.remove(cacheKey, leader);
+            }
+        }
+        return existing.join();
+    }
+
+    private String cacheKey(String vaultKey) {
+        return HashicorpVaultCacheKey.forSecret(realm, vaultKey, config).asString();
+    }
+
+    private String cacheGet(String cacheKey) {
         Cache<String, String> cache = vaultCache();
-        return cache == null ? null : cache.get(vaultKey);
+        return cache == null ? null : cache.get(cacheKey);
     }
 
-    private void cachePut(String vaultKey, String value) {
+    private void cachePut(String cacheKey, String value) {
         Cache<String, String> cache = vaultCache();
         if (cache != null) {
-            cache.put(vaultKey, value, config.getCacheTtlMs(), TimeUnit.MILLISECONDS);
+            cache.put(cacheKey, value, config.getCacheTtlMs(), TimeUnit.MILLISECONDS);
         }
     }
 
     private Cache<String, String> vaultCache() {
-        return HashicorpVaultCaches.get(session);
+        return HashicorpVaultCaches.get(session, config);
     }
 
     private static VaultRawSecret wrap(String value) {

@@ -15,14 +15,40 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp;
 
+import io.github.sakc.keycloak.vault.hashicorp.exception.VaultConfigurationException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HashicorpVaultConfigTest {
+
+    @Test
+    void rejectsBlankUrl() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "  "))));
+    }
+
+    @Test
+    void rejectsMalformedUrl() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "not a url"))));
+    }
+
+    @Test
+    void rejectsNonHttpUrlScheme() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "ftp://vault:8200"))));
+    }
+
+    @Test
+    void rejectsUrlWithoutHost() {
+        assertThrows(VaultConfigurationException.class,
+                () -> HashicorpVaultConfig.from(new MapScope(java.util.Map.of("url", "http:///no-host"))));
+    }
 
     @Test
     void readsDefaultsAndNormalizesUrlAndMount() {
@@ -36,6 +62,8 @@ class HashicorpVaultConfigTest {
         assertEquals("value", config.getKvField());
         assertEquals(300_000L, config.getCacheTtlMs());
         assertTrue(config.cacheEnabled());
+        assertEquals(10_000, config.getCacheMaxEntries());
+        assertNull(config.getKvReadVersion());
         assertEquals("token", config.getAuthMethod());
         assertNull(config.getNamespace());
     }
@@ -46,6 +74,17 @@ class HashicorpVaultConfigTest {
                 "cache-ttl", "0"
         )));
         assertFalse(config.cacheEnabled());
+    }
+
+    @Test
+    void configuresCacheAndVersionedKvV2Reads() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "cache-enabled", "false", "cache-ttl", "1000", "cache-max-entries", "25", "kv-read-version", "3"
+        )));
+        assertFalse(config.cacheEnabled());
+        assertEquals(1_000L, config.getCacheTtlMs());
+        assertEquals(25, config.getCacheMaxEntries());
+        assertEquals(3, config.getKvReadVersion());
     }
 
     @Test
@@ -71,5 +110,77 @@ class HashicorpVaultConfigTest {
         assertEquals("cert", HashicorpVaultConfig.normalizeAuthMethod("tls-cert"));
         assertEquals("approle", HashicorpVaultConfig.normalizeAuthMethod("AppRole"));
         assertEquals("token", HashicorpVaultConfig.normalizeAuthMethod("unknown"));
+    }
+
+    @Test
+    void recognizesKubernetesAuthMethod() {
+        assertEquals("kubernetes", HashicorpVaultConfig.normalizeAuthMethod("kubernetes"));
+        assertEquals("kubernetes", HashicorpVaultConfig.normalizeAuthMethod("Kubernetes"));
+    }
+
+    @Test
+    void managedSecretPrefixIsUnsetByDefaultForBackwardCompatibility() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "url", "http://127.0.0.1:8200"
+        )));
+        assertNull(config.getManagedSecretPrefix());
+    }
+
+    @Test
+    void managedSecretPrefixIsTrimmedAndBlankTreatedAsUnset() {
+        HashicorpVaultConfig configured = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "managed-secret-prefix", "  managed  "
+        )));
+        assertEquals("managed", configured.getManagedSecretPrefix());
+
+        HashicorpVaultConfig blank = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "managed-secret-prefix", "   "
+        )));
+        assertNull(blank.getManagedSecretPrefix());
+    }
+
+    @Test
+    void reliabilitySettingsDefaultToBoundedSensibleValues() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of()));
+        assertEquals(2_000L, config.getConnectTimeoutMs());
+        assertEquals(5_000L, config.getReadTimeoutMs());
+        assertEquals(5_000L, config.getRequestTimeoutMs());
+        assertEquals(4, config.getRetryMaxAttempts());
+        assertEquals(100L, config.getRetryInitialDelayMs());
+        assertEquals(1_000L, config.getRetryMaxDelayMs());
+        assertFalse(config.isHealthCheckEnabled());
+        assertEquals(30_000L, config.getHealthCheckIntervalMs());
+    }
+
+    @Test
+    void reliabilitySettingsAreConfigurable() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "connect-timeout-ms", "1000",
+                "read-timeout-ms", "3000",
+                "request-timeout-ms", "2500",
+                "retry-max-attempts", "6",
+                "retry-initial-delay-ms", "50",
+                "retry-max-delay-ms", "2000",
+                "health-check-enabled", "true",
+                "health-check-interval-ms", "15000"
+        )));
+        assertEquals(1000L, config.getConnectTimeoutMs());
+        assertEquals(3000L, config.getReadTimeoutMs());
+        assertEquals(2500L, config.getRequestTimeoutMs());
+        assertEquals(6, config.getRetryMaxAttempts());
+        assertEquals(50L, config.getRetryInitialDelayMs());
+        assertEquals(2000L, config.getRetryMaxDelayMs());
+        assertTrue(config.isHealthCheckEnabled());
+        assertEquals(15000L, config.getHealthCheckIntervalMs());
+    }
+
+    @Test
+    void invalidReliabilitySettingsFallBackToDefaults() {
+        HashicorpVaultConfig config = HashicorpVaultConfig.from(new MapScope(java.util.Map.of(
+                "connect-timeout-ms", "0",
+                "retry-max-attempts", "0"
+        )));
+        assertEquals(2_000L, config.getConnectTimeoutMs());
+        assertEquals(4, config.getRetryMaxAttempts());
     }
 }

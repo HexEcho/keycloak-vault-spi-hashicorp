@@ -22,7 +22,9 @@ import org.keycloak.util.JsonSerialization;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HashicorpVaultClientTest {
 
@@ -31,6 +33,13 @@ class HashicorpVaultClientTest {
         HashicorpVaultConfig config = config("http://127.0.0.1:8200", "secret", 2);
         assertEquals("http://127.0.0.1:8200/v1/secret/data/master_ldapBc",
                 HashicorpVaultClient.secretUrl(config, "master_ldapBc"));
+    }
+
+    @Test
+    void kvV2VersionedPathUsesVersionQueryParameter() {
+        HashicorpVaultConfig config = config("http://127.0.0.1:8200", "secret", 2);
+        assertEquals("http://127.0.0.1:8200/v1/secret/data/master_ldapBc?version=3",
+                HashicorpVaultClient.versionedSecretUrl(config, "master_ldapBc", 3));
     }
 
     @Test
@@ -83,6 +92,21 @@ class HashicorpVaultClientTest {
     void kvV1WriteBodyIsFlat() {
         HashicorpVaultConfig config = config("http://vault:8200/", "secret", 1);
         assertEquals(java.util.Map.of("value", "secret"), HashicorpVaultClient.writeBody(config, "secret"));
+    }
+
+    @Test
+    void extractsDeletedAndDestroyedKvV2VersionMetadata() throws IOException {
+        JsonNode root = JsonSerialization.mapper.readTree("""
+                {"data":{"current_version":4,"versions":{"3":{"created_time":"2026-01-01T00:00:00Z", "deletion_time":"", "destroyed":false},"4":{"created_time":"2026-01-02T00:00:00Z", "deletion_time":"2026-01-03T00:00:00Z", "destroyed":true}}}}
+                """);
+        HashicorpVaultClient.SecretMetadata active = HashicorpVaultClient.extractMetadata(200, root, 3);
+        assertEquals(4, active.currentVersion());
+        assertFalse(active.deleted());
+        assertFalse(active.destroyed());
+
+        HashicorpVaultClient.SecretMetadata removed = HashicorpVaultClient.extractMetadata(200, root, 4);
+        assertTrue(removed.deleted());
+        assertTrue(removed.destroyed());
     }
 
     private static HashicorpVaultConfig config(String url, String mount, int version) {

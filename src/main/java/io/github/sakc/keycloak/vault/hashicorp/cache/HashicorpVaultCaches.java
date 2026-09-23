@@ -15,6 +15,7 @@
  */
 package io.github.sakc.keycloak.vault.hashicorp.cache;
 
+import io.github.sakc.keycloak.vault.hashicorp.HashicorpVaultConfig;
 import org.infinispan.Cache;
 import org.infinispan.configuration.cache.CacheMode;
 import org.infinispan.configuration.cache.ConfigurationBuilder;
@@ -38,13 +39,13 @@ public final class HashicorpVaultCaches {
     private HashicorpVaultCaches() {
     }
 
-    public static Cache<String, String> get(KeycloakSession session) {
+    public static Cache<String, String> get(KeycloakSession session, HashicorpVaultConfig config) {
         InfinispanConnectionProvider infinispan = session.getProvider(InfinispanConnectionProvider.class);
         if (infinispan == null) {
             return null;
         }
         try {
-            defineLocalCache(infinispan);
+            defineLocalCache(infinispan, config.getCacheMaxEntries());
             return infinispan.getCache(CACHE_NAME, true);
         } catch (RuntimeException e) {
             if (!unavailableLogged) {
@@ -55,7 +56,7 @@ public final class HashicorpVaultCaches {
         }
     }
 
-    private static void defineLocalCache(InfinispanConnectionProvider infinispan) {
+    private static void defineLocalCache(InfinispanConnectionProvider infinispan, int maxEntries) {
         synchronized (DEFINE_LOCK) {
             Cache<?, ?> keys = infinispan.getCache(InfinispanConnectionProvider.KEYS_CACHE_NAME, false);
             if (keys == null) {
@@ -67,9 +68,10 @@ public final class HashicorpVaultCaches {
             }
             ConfigurationBuilder builder = new ConfigurationBuilder();
             builder.clustering().cacheMode(CacheMode.LOCAL);
-            builder.memory().maxCount(10_000);
+                builder.memory().maxCount(maxEntries);
             manager.defineConfiguration(CACHE_NAME, builder.build());
-            log.debug("Defined LOCAL Infinispan cache hashicorp-vault on Keycloak's cache manager.");
+                log.debugf("Defined LOCAL Infinispan cache hashicorp-vault on Keycloak's cache manager. maxEntries=%d",
+                    maxEntries);
         }
     }
 }

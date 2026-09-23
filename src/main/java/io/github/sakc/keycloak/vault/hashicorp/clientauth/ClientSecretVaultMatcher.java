@@ -40,7 +40,7 @@ public final class ClientSecretVaultMatcher {
         if (!wrapper.hasRotatedSecret() || wrapper.isClientRotatedSecretExpired()) {
             return false;
         }
-        return constantTimeEquals(resolve(session, wrapper.getClientRotatedSecret()), presentedSecret);
+        return constantTimeEquals(resolve(session, wrapper.getClientRotatedSecret(session, false)), presentedSecret);
     }
 
     static String resolve(KeycloakSession session, String stored) {
